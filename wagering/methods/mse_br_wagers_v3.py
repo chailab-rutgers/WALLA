@@ -47,7 +47,6 @@ class MSEBrWagersV3(WageringMethod):
                 - hidden_layers: List of hidden layer sizes (default: [512, 256])
                 - learning_rate: Learning rate for optimizer (default: 1e-5)
                 - device: Device to run on (default: 'cuda' if available, else 'cpu')
-                -score_function: Scoring function name ('linear', 'log', 'brier', 'normalized_linear') (default: 'linear')
         """
         super().__init__(num_models, config)
         
@@ -58,20 +57,8 @@ class MSEBrWagersV3(WageringMethod):
         self.temperature = float(config.get("temperature", 2.0))  # Temperature for softmax (higher = softer)
         self.grad_clip_norm = float(config.get("grad_clip_norm", 1.0))  # Gradient clipping norm
         self.normalize_hidden_states = config.get("normalize_hidden_states", True)  # L2 normalize hidden states
-        self.score_function_name = str(config.get("score_function", "normalized_linear"))  # Scoring function: 'linear', 'log', or 'brier'
         self.device_str = str(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
         self.device = torch.device(self.device_str)
-        self.frozen_model_indices = {
-            int(idx) for idx in config.get("frozen_model_indices", [])
-        }
-        self.inactive_model_indices = {
-            int(idx) for idx in config.get("inactive_model_indices", [])
-        }
-        for idx in self.frozen_model_indices.union(self.inactive_model_indices):
-            if idx < 0 or idx >= num_models:
-                raise ValueError(
-                    f"Model index {idx} is out of range for num_models={num_models}"
-                )
         self.lr_decay_factor = float(config.get("lr_decay_factor", 1.0))  # Factor to multiply LR by (1.0 = no decay)
         self.lr_decay_steps = int(config.get("lr_decay_steps", 1))  # Decay every N optimizer steps
 
@@ -115,12 +102,6 @@ class MSEBrWagersV3(WageringMethod):
         self._cached_projected_states: Optional[List[torch.Tensor]] = None
         self._cached_hidden_states_list: Optional[List[torch.Tensor]] = None
 
-    def _is_model_trainable(self, model_idx: int) -> bool:
-        return (
-            model_idx not in self.frozen_model_indices
-            and model_idx not in self.inactive_model_indices
-        )
-    
     def _build_router(self) -> nn.Module:
         """
         Build a single router MLP.
@@ -173,16 +154,6 @@ class MSEBrWagersV3(WageringMethod):
         
         # Project each model's batch
         for i in range(self.num_models):
-            if i in self.inactive_model_indices:
-                projected_batch_list.append(
-                    torch.zeros(
-                        (batch_size, self.common_hidden_dim),
-                        dtype=torch.float32,
-                        device=self.device,
-                    )
-                )
-                continue
-
             model_hs_batch = hidden_states_list[i]
             model_hidden_dim = model_hs_batch.shape[-1]
             
@@ -218,11 +189,6 @@ class MSEBrWagersV3(WageringMethod):
         # Route: compute raw wagers for each router
         raw_wagers_list = []
         for i in range(self.num_models):
-            if i in self.inactive_model_indices:
-                raw_wagers_list.append(
-                    torch.zeros((batch_size, 1), dtype=torch.float32, device=self.device)
-                )
-                continue
             model_projected = projected_batch_list[i]
             router_i = self.routers[i]
             raw_wager_i = router_i(model_projected)
@@ -231,12 +197,7 @@ class MSEBrWagersV3(WageringMethod):
         # Normalize
         raw_wagers_tensor = torch.cat(raw_wagers_list, dim=1)
         sigmoid_wagers = torch.sigmoid(raw_wagers_tensor / self.temperature)
-        if len(self.inactive_model_indices) > 0:
-            inactive_list = sorted(self.inactive_model_indices)
-            active_mask = torch.ones((1, self.num_models), dtype=sigmoid_wagers.dtype, device=self.device)
-            active_mask[:, inactive_list] = 0.0
-            sigmoid_wagers = sigmoid_wagers * active_mask
-                
+
         # Compute sum for normalization
         sigmoid_sum = torch.sum(sigmoid_wagers, dim=1, keepdim=True)
         
@@ -254,7 +215,7 @@ class MSEBrWagersV3(WageringMethod):
             # (they won't be updated, but they need to be in the computation graph)
             self._cached_hidden_states_list = [
                 torch.as_tensor(hidden_states_list[i], dtype=torch.float32, device=self.device)
-                    .requires_grad_(self._is_model_trainable(i))
+                    .requires_grad_(True)
                 for i in range(self.num_models)
             ]
         is_batch = model_logits.ndim == 3
@@ -439,7 +400,7 @@ class MSEBrWagersV3(WageringMethod):
                 hs_tensor = torch.as_tensor(hs, dtype=torch.float32, device=self.device)
             else:
                 hs_tensor = hs.to(self.device)
-            hs_tensor.requires_grad_(self._is_model_trainable(i))
+            hs_tensor.requires_grad_(True)
             hidden_states_tensors.append(hs_tensor)
         
         # PHASE 1: Compute forward pass ONCE from original state (with all intermediate tensors)
@@ -447,12 +408,6 @@ class MSEBrWagersV3(WageringMethod):
         with torch.enable_grad():
             raw_wagers_list = []
             for j in range(self.num_models):
-                if j in self.inactive_model_indices:
-                    raw_wagers_list.append(
-                        torch.zeros((batch_size, 1), dtype=torch.float32, device=self.device)
-                    )
-                    continue
-
                 model_hs_j = hidden_states_tensors[j]
                 
                 # Apply projection if exists
@@ -475,12 +430,6 @@ class MSEBrWagersV3(WageringMethod):
             # Normalize wagers (single computation for all)
             raw_wagers_tensor = torch.cat(raw_wagers_list, dim=1)
             sigmoid_wagers = torch.sigmoid(raw_wagers_tensor / self.temperature) # [batch_size, num_models]
-            if len(self.inactive_model_indices) > 0:
-                inactive_list = sorted(self.inactive_model_indices)
-                active_mask = torch.ones((1, self.num_models), dtype=sigmoid_wagers.dtype, device=self.device)
-                active_mask[:, inactive_list] = 0.0
-                sigmoid_wagers = sigmoid_wagers * active_mask
-            
 
             # scores = ((scores - #.detach()
 
@@ -514,9 +463,6 @@ class MSEBrWagersV3(WageringMethod):
             total_loss = 0.0
             num_updated_models = 0
             for i in range(self.num_models):
-                if not self._is_model_trainable(i):
-                    continue
-
                 # Find optimizer and scheduler for model i
                 optimizer_i = None
                 scheduler_i = None
@@ -577,11 +523,6 @@ class MSEBrWagersV3(WageringMethod):
                 total_loss += float(all_losses[i].detach().cpu().numpy())
                 num_updated_models += 1
 
-            if num_updated_models == 0:
-                raise RuntimeError(
-                    "No trainable models are active. Check frozen_model_indices/inactive_model_indices configuration."
-                )
-
         # Return average loss across all routers
         return {"loss": total_loss / num_updated_models}
 
@@ -629,10 +570,7 @@ class MSEBrWagersV3(WageringMethod):
                 "temperature": self.temperature,
                 "grad_clip_norm": self.grad_clip_norm,
                 "normalize_hidden_states": self.normalize_hidden_states,
-                "score_function": self.score_function_name,
                 "device": self.device_str,
-                "frozen_model_indices": sorted(self.frozen_model_indices),
-                "inactive_model_indices": sorted(self.inactive_model_indices),
                 "lr_decay_factor": self.lr_decay_factor,
                 "lr_decay_steps": self.lr_decay_steps,
                 "hidden_state_layers": list(self.hidden_state_layers),

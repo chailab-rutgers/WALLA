@@ -96,7 +96,6 @@ class RouterDCWagers(WageringMethod):
         self.device_str = str(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
         self.device = torch.device(self.device_str)
 
-        self.hidden_state_layers = cfg.get("hidden_state_layers", [-1])
         # When pubmedqa_strip_context is False, we build one encoder embedding per model prompt
         # (context/no-context variants) and concatenate them in model order.
         self.concat_prompt_embeddings = not self.pubmedqa_strip_context
@@ -578,7 +577,6 @@ class RouterDCWagers(WageringMethod):
                 "inactive_model_indices": sorted(self.inactive_model_indices),
                 "lr_decay_factor": self.lr_decay_factor,
                 "lr_decay_steps": self.lr_decay_steps,
-                "hidden_state_layers": self.hidden_state_layers,
                 "device": self.device_str,
             },
         }

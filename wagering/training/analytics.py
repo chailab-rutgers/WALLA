@@ -34,7 +34,6 @@ class WageringAnalytics:
         shuffle_data: bool,
         shuffle_seed: int,
         early_stopping_patience: int,
-        save_every: int,
         results: Dict[str, Any],
         metadata: Optional[Dict[str, Any]] = None,
         checkpoint_dir: Optional[Path] = None,
@@ -59,7 +58,6 @@ class WageringAnalytics:
                 as the monitored early stopping metric.
             use_min_kl_for_early_stopping: Whether KL(gold || pred) is used as the monitored
                 early stopping metric (only valid when soft probabilistic labels exist).
-            save_every: Save frequency
             results: Training results dictionary
             metadata: Optional metadata dict with model_names, dataset_names
             checkpoint_dir: Optional checkpoint directory path
@@ -112,7 +110,6 @@ class WageringAnalytics:
         row["early_stopping_criterion"] = early_stopping_criterion
         row["use_brier_d_regret_for_early_stopping"] = bool(use_brier_d_regret_for_early_stopping)
         row["use_min_kl_for_early_stopping"] = bool(use_min_kl_for_early_stopping)
-        row["save_every"] = save_every
         
         # Dataset size (included in settings_hash to distinguish different settings)
         if dataset_size is not None:
@@ -332,7 +329,7 @@ class WageringAnalytics:
             settings_columns = [
                 'settings_hash', 'run_timestamp', 'checkpoint_path', 'result_type',
                 'wagering_method', 'aggregation_method', 'num_models', 'num_datasets',
-                'shuffle_data', 'shuffle_seed', 'early_stopping_patience', 'save_every',
+                'shuffle_data', 'shuffle_seed', 'early_stopping_patience',
                 'datasets', 'models', 'training_datasets', 'evaluation_dataset',
                 'wagering_hidden_dim', 'wagering_hidden_layers',
                 'wagering_hidden_state_layers',
@@ -446,7 +443,7 @@ class WageringAnalytics:
             if col.startswith('final_') or col in ['accuracy', 'nll', 'brier', 'auc', 'ece', 'num_examples', 'd_regret', 'meta_acc', 'meta_nll', 'meta_auc']
             or (pd.api.types.is_numeric_dtype(analytics_df[col]) 
                 and col not in ['num_models', 'num_datasets', 'shuffle_seed', 'early_stopping_patience', 
-                               'save_every', 'seed', 'num_examples'])
+                               'seed', 'num_examples'])
         ]
         return result_columns
     

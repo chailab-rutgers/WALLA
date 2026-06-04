@@ -222,15 +222,6 @@ def main(
         num_models=num_models,
         config=wagering_config.get("config", {}),
     )
-    hidden_state_layers = getattr(
-        wagering_method,
-        "hidden_state_layers",
-        wagering_config.get("config", {}).get("hidden_state_layers"),
-    )
-    # Keep cache checks and evaluator runtime on the same layer selection, even
-    # for methods that don't explicitly expose hidden_state_layers.
-    setattr(wagering_method, "hidden_state_layers", hidden_state_layers)
-
     requires_checkpoint = len(wagering_method.get_trainable_parameters()) > 0
 
     if checkpoint_path is None:
@@ -244,9 +235,18 @@ def main(
     # Determine if hidden states are required
     wagering_method_name = type(wagering_method).__name__
     needs_hidden_states = (
-        wagering_method_name not in ["EqualWagers", "ZeroOneWagers", "OneZeroWagers"]
+        bool(getattr(wagering_method, "requires_hidden_states", True))
         or logit_calibrator is not None
     )
+    hidden_state_layers = None
+    if needs_hidden_states:
+        hidden_state_layers = getattr(
+            wagering_method,
+            "hidden_state_layers",
+            wagering_config.get("config", {}).get("hidden_state_layers"),
+        )
+        setattr(wagering_method, "hidden_state_layers", hidden_state_layers)
+    cache_hidden_state_layers = hidden_state_layers if needs_hidden_states else [-1]
 
     # Check cache per model across all eval datasets
     option_tokens = args.get("option_tokens", ["A", "B", "C", "D"])
@@ -270,7 +270,7 @@ def main(
                 option_tokens,
                 prompt_variant=prompt_variant,
                 model_index=idx,
-                hidden_state_layers=hidden_state_layers,
+                hidden_state_layers=cache_hidden_state_layers,
             )
             if cached_logits is None or (needs_hidden_states and cached_hidden_states is None):
                 model_cached = False
@@ -489,10 +489,7 @@ def main(
 
     # Load aggregation function
     aggregation_config = args["aggregation"]
-    aggregation_function = load_aggregation_function(
-        aggregation_config["name"],
-        config=aggregation_config.get("config", {}),
-    )
+    aggregation_function = load_aggregation_function(aggregation_config["name"])
     
     # Set up evaluation checkpoint directory
     eval_checkpoint_dir = None
@@ -518,13 +515,6 @@ def main(
     
     seed = args.get("seed", args.get("shuffle_seed", None))
 
-    env_prob_dbg = os.environ.get("WAGERING_DEBUG_PROB_ALIGN", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    debug_batch_prob_alignment = bool(args.get("debug_batch_prob_alignment", False)) or env_prob_dbg
-    
     # Get starting step from wandb if active
     wandb_starting_step = None
     if wandb_logger and wandb.run is not None:
@@ -555,7 +545,6 @@ def main(
             model_cfgs if force_load_all_models else None
         ),
         perplexity_load_cache_kwargs=perplexity_cache_kwargs if perplexity_cache_kwargs else None,
-        debug_batch_prob_alignment=debug_batch_prob_alignment,
     )
     
     # Evaluate

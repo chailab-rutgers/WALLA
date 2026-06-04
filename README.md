@@ -68,16 +68,6 @@ cd /common/home/yl2310/MultiLLMs
 .venv/bin/python scripts/wagering_eval.py  examples/configs/wagering_training/mse_br_wagers_v2_8models.yaml
 ```
 
-### Two-phase (distribution shift) pipeline
-
-If a config defines `phase_shift.phase1` and `phase_shift.phase2`, run:
-
-```bash
-cd /common/home/yl2310/MultiLLMs
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/wagering_two_phase_pipeline.py \
-  path/to/two_phase_config.yaml
-```
-
 ## Notes on “wager training”
 
 The goal of the mechanism is to incentivize models to **recognize comparative advantage and limitations**—participating confidently on questions within their expertise and abstaining elsewhere—rather than to improve base predictive capability from payout signals alone. Fine-tuning on payout signals is fundamentally limited without domain-appropriate training data; learning *when to participate* is often both easier and more valuable than trying to become universally competent.

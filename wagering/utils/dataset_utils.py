@@ -32,8 +32,6 @@ _DATASET_CONFIG_EPHEMERAL_KEYS = frozenset(
     {
         "max_batches",
         "max_training_batches",
-        "frozen_model_indices",
-        "inactive_model_indices",
     }
 )
 

@@ -69,32 +69,23 @@ def load_wagering_method(
     # Import methods locally to avoid circular imports
     from .equal_wagers import EqualWagers
     from .centralized_wagers import CentralizedWagers
-    from .mse_br_wagers import MSEBrWagers
     from .mse_br_wagers_v2 import MSEBrWagersV2
     from .mse_br_wagers_v3 import MSEBrWagersV3
     from .mse_br_wagers_v2_augmented import MSEBrWagersV2Augmented
-    from .mse_br_wagers_v3_augmented import MSEBrWagersV3Augmented
     from .route_llm_bert import RouteLLMBertWagers
     from .router_dc import RouterDCWagers
     from .packllm_perplexity_wagers import PackLLMPerplexityWagers
     from .kl_uniform_wagers import KLUniformWagers
     from .nirt_router import NIRTRouterWagers
     
-    # Built-in methods mapping
     methods = {
         "equal_wagers": EqualWagers,
-        "equal": EqualWagers,
         "centralized_wagers": CentralizedWagers,
-        "mse_br_wagers": MSEBrWagers,
         "mse_br_wagers_v2": MSEBrWagersV2,
         "mse_br_wagers_v3": MSEBrWagersV3,
         "mse_br_wagers_v2_augmented": MSEBrWagersV2Augmented,
-        "mse_br_wagers_v3_augmented": MSEBrWagersV3Augmented,
         "route_llm_bert": RouteLLMBertWagers,
-        "route_llm": RouteLLMBertWagers,
         "router_dc": RouterDCWagers,
-        "routerDC": RouterDCWagers,
-        "routerdc": RouterDCWagers,
         "packllm_perplexity_wagers": PackLLMPerplexityWagers,
         "kl_uniform_wagers": KLUniformWagers,
         "nirt_router": NIRTRouterWagers,
@@ -109,4 +100,3 @@ def load_wagering_method(
         f"Unknown wagering method: {method_name}. "
         f"Available methods: {list(methods.keys())}"
     )
-

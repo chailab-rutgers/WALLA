@@ -1,31 +1,28 @@
-# Full end-to-end pipeline configuration for cluster_saturation_bayes
-# Combines training and evaluation in a single config file
-
-# ============================================================================
-# SHARED CONFIGURATION (used by both training and evaluation)
-# ============================================================================
-
-# Models (shared between training and evaluation)
 _include_models:
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-
-# Apply adaptive temperature scaling to cached option logits before wagering.
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
 calibrated: false
-
-# Wagering method (must match between training and evaluation)
 wagering_method:
   name: mse_br_wagers_v3
   config:
-    hidden_dim: 4096
-    hidden_layers: [512, 256]
-    hidden_state_layers_per_model: [-8,-7,-6,-5,-4,-3, -2, -1]
+    hidden_layers:
+    - 512
+    - 256
+    hidden_state_layers_per_model:
+    - -8
+    - -7
+    - -6
+    - -5
+    - -4
+    - -3
+    - -2
+    - -1
     learning_rate: 5e-6
     lr_decay_factor: 1
     lr_decay_steps: 100
@@ -33,44 +30,29 @@ wagering_method:
     grad_clip_norm: 1.0
     normalize_hidden_states: false
     device: cuda:0
-
-# Aggregation function (must match between training and evaluation)
+    common_hidden_dim: 4096
 aggregation:
   name: linear_pooling
   config: {}
-
-# Binary option tokens for this synthetic dataset.
-option_tokens: ["1", "0"]
+option_tokens:
+- '1'
+- '0'
 cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
-
-# ============================================================================
-# TRAINING CONFIGURATION
-# ============================================================================
-
 _include_datasets:
-  - datasets/cluster_saturation_bayesX.yaml
-
+- datasets/cluster_saturation_bayesX.yaml
 num_epochs: 5
 checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
-save_every: 100
 training_batch_size: 100
-
 auto_resume: false
 balance_training_datasets: true
 shuffle_data: true
 shuffle_seed: 18
-early_stopping_patience: 1500  # Stop training if no improvement for 20 epochs (default: 10)
-early_stopping_criterion: online_learning  # Use validation performance for early stopping (default: "validation")
+early_stopping_patience: 1500
+early_stopping_criterion: online_learning
 use_min_kl_for_early_stopping: true
-
 report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: mse_br_wagers_v3_cluster_saturation_bayesX_mixed_layers_8
-
-# ============================================================================
-# EVALUATION CONFIGURATION
-# ============================================================================
-
 _include_test_datasets:
-  - datasets/cluster_saturation_bayesX.yaml
+- datasets/cluster_saturation_bayesX.yaml

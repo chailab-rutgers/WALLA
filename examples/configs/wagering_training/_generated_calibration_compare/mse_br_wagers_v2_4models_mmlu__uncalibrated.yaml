@@ -36,7 +36,6 @@ datasets:
 - train_split: auxiliary_train
 num_epochs: 50
 checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
-save_every: 100
 training_batch_size: 100
 wager_score_plot_every: 500
 auto_resume: false

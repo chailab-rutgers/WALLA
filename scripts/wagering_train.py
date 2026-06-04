@@ -234,28 +234,31 @@ def main(config_path: Optional[str] = None, calibration_path: Optional[str] = No
         num_models=num_models,
         config=wagering_config.get("config", {}),
     )
-    hidden_state_layers = getattr(
-        wagering_method,
-        "hidden_state_layers",
-        wagering_config.get("config", {}).get("hidden_state_layers"),
-    )
-    hidden_state_layers_per_model = getattr(
-        wagering_method,
-        "hidden_state_layers_per_model",
-        wagering_config.get("config", {}).get("hidden_state_layers_per_model"),
-    )
-    # Keep cache checks and trainer runtime on the same layer selection, even
-    # for methods that don't explicitly expose hidden_state_layers.
-    setattr(wagering_method, "hidden_state_layers", hidden_state_layers)
-    setattr(wagering_method, "hidden_state_layers_per_model", hidden_state_layers_per_model)
     log.info(f"Loaded wagering method: {wagering_config['name']}")
 
     wagering_method_name = type(wagering_method).__name__
-    wagering_needs_hidden_states = wagering_method_name not in [
-        "EqualWagers",
-        "ZeroOneWagers",
-        "OneZeroWagers",
-    ]
+    wagering_needs_hidden_states = bool(
+        getattr(wagering_method, "requires_hidden_states", True)
+    )
+    hidden_state_layers = None
+    hidden_state_layers_per_model = None
+    if wagering_needs_hidden_states or logit_calibrator is not None:
+        hidden_state_layers = getattr(
+            wagering_method,
+            "hidden_state_layers",
+            wagering_config.get("config", {}).get("hidden_state_layers"),
+        )
+        hidden_state_layers_per_model = getattr(
+            wagering_method,
+            "hidden_state_layers_per_model",
+            wagering_config.get("config", {}).get("hidden_state_layers_per_model"),
+        )
+        setattr(wagering_method, "hidden_state_layers", hidden_state_layers)
+        setattr(
+            wagering_method,
+            "hidden_state_layers_per_model",
+            hidden_state_layers_per_model,
+        )
     resolved_hidden_layers_per_model: List[Optional[List[int]]] = [
         resolve_hidden_state_layers_for_model(
             hidden_state_layers,
@@ -299,12 +302,15 @@ def main(config_path: Optional[str] = None, calibration_path: Optional[str] = No
         model_path = model_cfg["path"]
         cached_model_names.append(model_path.replace("/", "_"))
 
-        model_hidden_layers = resolve_hidden_state_layers_for_model(
-            hidden_state_layers,
-            hidden_state_layers_per_model,
-            model_index=idx,
-            num_models=num_models,
-        )
+        if wagering_needs_hidden_states or logit_calibrator is not None:
+            model_hidden_layers = resolve_hidden_state_layers_for_model(
+                hidden_state_layers,
+                hidden_state_layers_per_model,
+                model_index=idx,
+                num_models=num_models,
+            )
+        else:
+            model_hidden_layers = [-1]
         model_cache_ok = True
         for dataset in train_datasets:
             prompt_variant = get_model_prompt_variant(dataset, model_index=idx)
@@ -387,38 +393,17 @@ def main(config_path: Optional[str] = None, calibration_path: Optional[str] = No
     
     # Load aggregation function
     aggregation_config = args["aggregation"]
-    aggregation_function = load_aggregation_function(
-        aggregation_config["name"],
-        config=aggregation_config.get("config", {}),
-    )
+    aggregation_function = load_aggregation_function(aggregation_config["name"])
     log.info(f"Loaded aggregation function: {aggregation_config['name']}")
     
-    # Check for resume checkpoint
-    auto_resume = args.get("auto_resume", True)
-    resume_checkpoint = args.get("resume_from_checkpoint", None)
-    
-    if resume_checkpoint:
-        resume_path = Path(resume_checkpoint)
-        if not resume_path.is_absolute():
-            resume_path = checkpoint_dir / resume_checkpoint
-        if resume_path.exists():
-            log.info(f"Resuming from checkpoint: {resume_path}")
-            resume_checkpoint = str(resume_path)
-        else:
-            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
-    elif auto_resume:
-        checkpoint_files = list(checkpoint_dir.glob("checkpoint_epoch_*_step_*.pt"))
-        if checkpoint_files:
-            latest_checkpoint = max(checkpoint_files, key=lambda p: p.stat().st_mtime)
-            log.info(f"Auto-resuming from: {latest_checkpoint}")
-            resume_checkpoint = str(latest_checkpoint)
-    
-    env_prob_dbg = os.environ.get("WAGERING_DEBUG_PROB_ALIGN", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    debug_batch_prob_alignment = bool(args.get("debug_batch_prob_alignment", False)) or env_prob_dbg
+    if args.get("resume_from_checkpoint"):
+        raise NotImplementedError(
+            "Resuming training from checkpoints is not supported; always start from scratch."
+        )
+    if args.get("auto_resume"):
+        raise NotImplementedError(
+            "auto_resume is not supported; always start training from scratch."
+        )
 
     # Create trainer
     trainer = WageringTrainer(
@@ -429,13 +414,10 @@ def main(config_path: Optional[str] = None, calibration_path: Optional[str] = No
         option_tokens=args.get("option_tokens", ["A", "B", "C", "D"]),
         checkpoint_dir=checkpoint_dir,
         wandb_logger=wandb_logger,
-        save_every=args.get("save_every", 100),
         metadata=checkpoint_metadata,
-        resume_from_checkpoint=resume_checkpoint,
         shuffle_data=args.get("shuffle_data", True),
         shuffle_seed=args.get("shuffle_seed", 42),
         early_stopping_patience=args.get("early_stopping_patience", 10),
-        stop_at_last_iteration=args.get("stop_at_last_iteration", False),
         early_stopping_criterion=args.get("early_stopping_criterion", "validation"),
         use_brier_d_regret_for_early_stopping=args.get("use_brier_d_regret_for_early_stopping", False),
         use_min_kl_for_early_stopping=args.get("use_min_kl_for_early_stopping", False),
@@ -447,7 +429,6 @@ def main(config_path: Optional[str] = None, calibration_path: Optional[str] = No
         max_training_batches=args.get("max_training_batches"),
         model_configs_for_sequential_perplexity=(model_cfgs if needs_model_objects_for_perplexity else None),
         perplexity_load_cache_kwargs=perplexity_cache_kwargs if perplexity_cache_kwargs else None,
-        debug_batch_prob_alignment=debug_batch_prob_alignment,
     )
     
     # Train

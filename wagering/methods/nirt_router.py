@@ -75,9 +75,6 @@ class NIRTRouterWagers(WageringMethod):
         self.freeze_encoder = bool(cfg.get("freeze_encoder", False))
         # Default to keeping context (caller can disable it explicitly).
         self.pubmedqa_strip_context = bool(cfg.get("pubmedqa_strip_context", False))
-        self.use_concatenated_prompt_context = bool(
-            cfg.get("use_concatenated_prompt_context", True)
-        )
         self.concat_prompt_embeddings = not self.pubmedqa_strip_context
         self.expects_per_model_router_prompts = True
 
@@ -524,7 +521,6 @@ class NIRTRouterWagers(WageringMethod):
                 "weight_decay": self.weight_decay,
                 "freeze_encoder": self.freeze_encoder,
                 "pubmedqa_strip_context": self.pubmedqa_strip_context,
-                "use_concatenated_prompt_context": self.use_concatenated_prompt_context,
                 "knowledge_dim": self.knowledge_dim,
                 "model_embedding_dim": self.model_embedding_dim,
                 "router_hidden_dim": self.router_hidden_dim,

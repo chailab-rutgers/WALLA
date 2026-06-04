@@ -1121,56 +1121,6 @@ def _build_pubmedqa_prompt_fallback(question: str, long_answer: str, context_tex
     )
 
 
-def get_concatenated_router_prompts(
-    dataset: Dataset,
-    num_models: int,
-    *,
-    deduplicate: bool = True,
-) -> List[str]:
-    """
-    Build router inputs by concatenating model-specific prompts for each example.
-
-    For mixed-context datasets (PubMedQA/RACE), this exposes all prompt/context
-    variants observed by the ensemble to the router while preserving per-model
-    inference prompts for logit collection.
-    """
-    if num_models <= 0:
-        return list(dataset.x)
-
-    per_model_prompts: List[List[str]] = [
-        get_model_specific_prompts(dataset, model_index=model_idx)
-        for model_idx in range(num_models)
-    ]
-
-    if not per_model_prompts:
-        return list(dataset.x)
-
-    num_examples = len(per_model_prompts[0])
-    for model_idx, prompts in enumerate(per_model_prompts):
-        if len(prompts) != num_examples:
-            raise ValueError(
-                "Model-specific prompt length mismatch while building router prompts: "
-                f"model_index={model_idx}, len={len(prompts)}, expected={num_examples}"
-            )
-
-    router_prompts: List[str] = []
-    for example_idx in range(num_examples):
-        pieces = [per_model_prompts[model_idx][example_idx] for model_idx in range(num_models)]
-        if deduplicate:
-            unique_pieces: List[str] = []
-            seen = set()
-            for piece in pieces:
-                piece_text = str(piece)
-                if piece_text in seen:
-                    continue
-                seen.add(piece_text)
-                unique_pieces.append(piece_text)
-            pieces = unique_pieces
-        router_prompts.append("\n\n".join(str(piece) for piece in pieces))
-
-    return router_prompts
-
-
 def _resolve_label_to_index(
     label: object,
     option_tokens: List[str],

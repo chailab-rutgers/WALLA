@@ -9,7 +9,6 @@ wagering_method:
   name: mse_br_wagers_v2_augmented
   config:
     ablation_study: true
-    hidden_dim: 4096
     hidden_layers:
     - 512
     - 256
@@ -22,6 +21,7 @@ wagering_method:
     grad_clip_norm: 1.0
     normalize_hidden_states: false
     device: cuda:0
+    common_hidden_dim: 4096
 aggregation:
   name: linear_pooling
   config: {}
@@ -36,7 +36,6 @@ datasets:
 - train_split: train
 num_epochs: 1
 checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
-save_every: 100
 training_batch_size: 100
 wager_score_plot_every: 1000
 auto_resume: false

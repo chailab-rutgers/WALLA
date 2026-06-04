@@ -1,99 +1,52 @@
-# Full end-to-end pipeline configuration for weighted score wagers with 1000 samples
-# Combines training and evaluation in a single config file
-
-# ============================================================================
-# SHARED CONFIGURATION (used by both training and evaluation)
-# ============================================================================
-
-# Models (shared between training and evaluation)
 _include_models:
-  - models/gemma_2_9b_it.yaml
-  - models/llama3_1_8b_instruct.yaml
-  - models/llama3_aloe_8b_alpha.yaml
-  - models/biomistral_7b.yaml
-  # - models/qwen3_5_9b.yaml
-  # - models/llama_2_7b.yaml
-
-# Apply adaptive temperature scaling to cached option logits before wagering.
+- models/gemma_2_9b_it.yaml
+- models/llama3_1_8b_instruct.yaml
+- models/llama3_aloe_8b_alpha.yaml
+- models/biomistral_7b.yaml
 calibrated: false
 _include_calibration: calibration/adaptive_temperature_1000samples.yaml
-
-
-
-# Wagering method (must match between training and evaluation)
 wagering_method:
   name: centralized_wagers
   config:
-    hidden_dim: 4096  # Dimension of hidden states (adjust based on model)
-    hidden_layers: [512, 256]  # MLP hidden layer sizes
-    hidden_state_layers: [-1]
-    learning_rate: 1e-7  # Learning rate for router optimizer (lowered from 1e-4 to prevent wager collapse)
-    lr_decay_factor: 1.0  # Decay learning rate by this factor every lr_decay_steps (1.0 = no decay)
-    lr_decay_steps: 100  # Number of optimizer steps between decay applications
-    temperature: 2.0  # Temperature for softmax (higher = softer, prevents one model from dominating)
-    grad_clip_norm: 1.0  # Gradient clipping norm (prevents gradient explosion)
-    normalize_hidden_states: false  # L2 normalize hidden states before projection (prevents scale imbalance)
-    device: cuda:0  # Device to run router on (will use GPU 2 when CUDA_VISIBLE_DEVICES=2,3)
-# Aggregation function (must match between training and evaluation)
+    hidden_dim: 4096
+    hidden_layers:
+    - 512
+    - 256
+    hidden_state_layers:
+    - -1
+    learning_rate: 1e-7
+    temperature: 2.0
+    grad_clip_norm: 1.0
+    normalize_hidden_states: false
+    device: cuda:0
 aggregation:
   name: linear_pooling
   config: {}
-
-# Common options
-option_tokens: ["A", "B", "C", "D"]
-
-
-# ============================================================================
-# TRAINING CONFIGURATION
-# ============================================================================
-
-# Training datasets
+option_tokens:
+- A
+- B
+- C
+- D
 _include_datasets:
-  - datasets/medmcqa.yaml
-
-# Override dataset-specific settings for training
+- datasets/medmcqa.yaml
 datasets:
-  - train_split: train
-
-# Training parameters
-num_epochs: 50  # Default: 100 epochs
-# Base directory for checkpoints (unique subdirectory will be generated)
+- train_split: train
+num_epochs: 50
 checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
-save_every: 100  # Save checkpoint every 100 batches
-training_batch_size: 100  # Batch size for training loop (different from batch size for collecting hidden states)
-
-# Training options
-auto_resume: false  # Automatically resume from latest checkpoint if available
-balance_training_datasets: true  # If true, randomly subsample each dataset to min dataset size
-shuffle_data: true  # Shuffle training data across datasets
-shuffle_seed: 18 #18 #1  # Random seed for shuffling (will be overridden by sweep)
-early_stopping_patience: 5  # Stop training if no improvement for 20 epochs (default: 10)
-early_stopping_criterion: validation  # Use validation performance for early stopping (default: "validation")
-# Wandb logging
+training_batch_size: 100
+auto_resume: false
+balance_training_datasets: true
+shuffle_data: true
+shuffle_seed: 18
+early_stopping_patience: 5
+early_stopping_criterion: validation
 report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: centralized_wagers_4models_medmcqa
-
-# ============================================================================
-# EVALUATION CONFIGURATION
-# ============================================================================
-
-# Checkpoint path will be automatically set to {checkpoint_dir}/final
-# But you can override it here if needed
-# For testing, this will be set by the pipeline script automatically
-
-# Test datasets
-
-# When a training and test entry use the same HF ``name`` and the same split (e.g. both ``train``),
-# load that split once logically and partition 6:2:2 (train/val/held-out test) so eval does not
-# repeat training rows. Logits cache follows the *full* unpartitioned split.
 shared_source_tripartition: true
-
 _include_test_datasets:
-  - datasets/medmcqa.yaml
-
-# Override dataset-specific settings for evaluation
+- datasets/medmcqa.yaml
 test_datasets:
-  - display_name: medmcqa_test
-    eval_split: train
+- display_name: medmcqa_test
+  eval_split: train

@@ -24,12 +24,13 @@ from wagering.core.metrics import ECE, bernoulli_kl_divergence, bernoulli_tv_dis
 # Local wagering imports
 from wagering.methods.base import WageringMethod
 from wagering.training.analytics import WageringAnalytics
-from wagering.training.trainer import (
-    WageringTrainer,
-    _compute_model_brier_scores,
+from wagering.training.trainer import WageringTrainer
+from wagering.utils.wagering_metrics import (
     compute_brier_dynamic_regret,
     compute_dynamic_regret,
     compute_meta_metrics,
+    compute_model_brier_scores,
+    compute_model_brier_scores_soft_binary,
     compute_normalized_wager_probability_stats,
 )
 from wagering.aggregation.base import AggregationFunction
@@ -46,199 +47,6 @@ from wagering.utils.multi_llm_ensemble import (
 log = logging.getLogger("wagering")
 
 from sklearn.metrics import roc_auc_score
-
-
-def _kl_qp_categorical_rows(q: np.ndarray, p: np.ndarray, eps: float = 1e-10) -> np.ndarray:
-    """KL(q || p) per row for discrete distributions q, p of shape [batch, num_options]."""
-    q = np.asarray(q, dtype=np.float64)
-    p = np.asarray(p, dtype=np.float64)
-    q = np.clip(q, eps, 1.0)
-    p = np.clip(p, eps, 1.0)
-    return np.sum(q * (np.log(q) - np.log(p)), axis=-1)
-
-
-def _tv_distance_per_model(p: np.ndarray, q: np.ndarray) -> np.ndarray:
-    """
-    Total variation distance d_TV(p, q) = (1/2) * sum_k |p_k - q_k|.
-
-    Args:
-        p: [batch, num_models, num_options]
-        q: [batch, num_options]
-
-    Returns:
-        [batch, num_models]
-    """
-    p = np.asarray(p, dtype=np.float64)
-    q = np.asarray(q, dtype=np.float64)
-    return 0.5 * np.sum(np.abs(p - q[:, np.newaxis, :]), axis=-1)
-
-
-def _softmax_np(logits: np.ndarray) -> np.ndarray:
-    """Stable softmax for arrays with last dim = classes."""
-    x = np.asarray(logits, dtype=np.float64)
-    m = np.max(x, axis=-1, keepdims=True)
-    z = x - m
-    ez = np.exp(z)
-    denom = np.sum(ez, axis=-1, keepdims=True)
-    return ez / (denom + 1e-20)
-
-
-def _compute_model_brier_scores_soft_binary(
-    model_logits: np.ndarray,
-    *,
-    gt_positive_probs: np.ndarray,
-    positive_option_index: int,
-) -> np.ndarray:
-    """
-    Compute per-model Brier scores when the binary ground-truth is a soft probability.
-
-    Args:
-        model_logits: [num_examples, num_models, 2]
-        gt_positive_probs: [num_examples] probability of the positive option
-        positive_option_index: index of the positive option in the 2-way output
-
-    Returns:
-        model_brier: [num_examples, num_models]
-    """
-    logits = np.asarray(model_logits, dtype=np.float64)
-    if logits.ndim != 3 or logits.shape[-1] != 2:
-        raise ValueError("soft-binary Brier expects model_logits shape [N, M, 2]")
-    gt = np.asarray(gt_positive_probs, dtype=np.float64)
-    if gt.ndim != 1 or gt.shape[0] != logits.shape[0]:
-        raise ValueError("gt_positive_probs must be 1D and match model_logits first dim")
-    pos_idx = int(positive_option_index)
-    if pos_idx not in (0, 1):
-        raise ValueError("positive_option_index must be 0 or 1 for binary tasks")
-
-    y = np.zeros((logits.shape[0], 2), dtype=np.float64)
-    y[:, pos_idx] = gt
-    y[:, 1 - pos_idx] = 1.0 - gt
-
-    model_probs = _softmax_np(logits)  # [N, M, 2]
-    return np.sum((model_probs - y[:, np.newaxis, :]) ** 2, axis=2)
-
-
-def _debug_log_eval_batch_prob_align(
-    *,
-    dataset: Dataset,
-    dataset_name: str,
-    option_tokens: List[str],
-    batch_start: int,
-    batch_end: int,
-    batch_model_probs: np.ndarray,  # [B, M, K]
-    batch_labels: np.ndarray,  # [B]
-) -> None:
-    """
-    Inference-time analogue of the training debug logs.
-
-    Uses `dataset.probability_labels` (from `probability_label_column`) when present to build
-    soft ground-truth distributions (binary only), otherwise uses one-hot labels.
-
-    Logs:
-      - which model is best per row by |P(pos)-Q(pos)|
-      - mean KL(q||p_best)
-      - mean over rows of mean KL(q||p_nonbest) (nonbest averaged across models first)
-      - pct_best_model_is_context_slot for |P(pos)-Q(pos)|, TV, and argmin KL
-    """
-    p_all = np.asarray(batch_model_probs, dtype=np.float64)
-    bsz, num_models, num_options = p_all.shape
-    if num_options != 2:
-        log.info(
-            "eval_debug_prob_align dataset=%s rows=[%d:%d): skipped (num_options=%d != 2)",
-            dataset_name,
-            int(batch_start),
-            int(batch_end),
-            int(num_options),
-        )
-        return
-
-    pos_marker = getattr(dataset, "positive_label", None)
-    pos_idx = 0
-    if pos_marker is not None:
-        try:
-            pos_idx = int(option_tokens.index(str(pos_marker).strip()))
-        except ValueError:
-            pos_idx = 0
-
-    prob_labs = getattr(dataset, "probability_labels", None)
-    if prob_labs is None and getattr(dataset, "probabilistic_labels", None) is not None:
-        raise ValueError(
-            "Dataset provides `probabilistic_labels` but not `probability_labels`. "
-            "KL/TV must use `probability_labels` (configured via `probability_label_column`)."
-        )
-
-    if isinstance(prob_labs, (list, tuple)) and len(prob_labs) == len(dataset.x):
-        target_vec = np.asarray(prob_labs[batch_start:batch_end], dtype=np.float64)
-    else:
-        target_vec = (np.asarray(batch_labels, dtype=np.int64) == int(pos_idx)).astype(np.float64)
-
-    q = np.zeros((bsz, 2), dtype=np.float64)
-    q[:, int(pos_idx)] = target_vec
-    q[:, int(1 - int(pos_idx))] = 1.0 - target_vec
-
-    p_pos = p_all[:, :, int(pos_idx)]
-    q_pos = q[:, int(pos_idx)]
-    abs_err = np.abs(p_pos - q_pos[:, np.newaxis])
-    best_m = np.argmin(abs_err, axis=1)
-
-    tv_bm = _tv_distance_per_model(p_all, q)
-    best_m_tv = np.argmin(tv_bm, axis=1)
-
-    kl_all = np.empty((bsz, num_models), dtype=np.float64)
-    for m in range(num_models):
-        kl_all[:, m] = _kl_qp_categorical_rows(q, p_all[:, m, :])
-    best_m_kl = np.argmin(kl_all, axis=1)
-
-    p_best = p_all[np.arange(bsz), best_m, :]
-    kl_best = _kl_qp_categorical_rows(q, p_best)
-
-    other_mask = np.ones((bsz, num_models), dtype=bool)
-    other_mask[np.arange(bsz), best_m] = False
-    n_other = np.maximum(other_mask.sum(axis=1), 1)
-    kl_other_mean_per_ex = (kl_all * other_mask).sum(axis=1) / n_other
-
-    # Context routing assignment (if present) is stored directly on the dataset.
-    ctx_model = np.full(bsz, -1, dtype=np.int64)
-    dataset_type = _get_mixed_context_dataset_type(dataset)
-    if dataset_type is not None:
-        raw = getattr(dataset, f"{dataset_type}_context_assignment_by_example", None)
-        if isinstance(raw, list) and len(raw) == len(dataset.x):
-            try:
-                ctx_model = np.asarray(raw, dtype=np.int64)[batch_start:batch_end]
-            except Exception:
-                ctx_model = np.full(bsz, -1, dtype=np.int64)
-
-    ctx_ok = ctx_model >= 0
-    if np.any(ctx_ok):
-        pct_ctx = 100.0 * float(np.mean(best_m[ctx_ok] == ctx_model[ctx_ok]))
-        pct_ctx_tv = 100.0 * float(np.mean(best_m_tv[ctx_ok] == ctx_model[ctx_ok]))
-        pct_ctx_kl = 100.0 * float(np.mean(best_m_kl[ctx_ok] == ctx_model[ctx_ok]))
-        ctx_pct_str = f"{pct_ctx:.2f}%"
-        ctx_pct_tv_str = f"{pct_ctx_tv:.2f}%"
-        ctx_pct_kl_str = f"{pct_ctx_kl:.2f}%"
-    else:
-        ctx_pct_str = "n/a_no_mixed_context_routing_on_batch"
-        ctx_pct_tv_str = "n/a_no_mixed_context_routing_on_batch"
-        ctx_pct_kl_str = "n/a_no_mixed_context_routing_on_batch"
-
-    counts = np.bincount(best_m, minlength=num_models)
-    log.info(
-        "eval_debug_prob_align dataset=%s rows=[%d:%d) |best_model_counts|=%s | "
-        "mean_KL_best=%.6f mean_of_mean_KL_nonbest=%.6f | "
-        "pct_best_model_is_context_slot=%s pct_best_model_is_context_slot_tv=%s "
-        "pct_best_model_is_context_slot_kl=%s (over %d/%d rows with assignment; TV=d_TV=0.5*L1; KL=KL(q||p))",
-        dataset_name,
-        int(batch_start),
-        int(batch_end),
-        counts.tolist(),
-        float(np.mean(kl_best)),
-        float(np.mean(kl_other_mean_per_ex)),
-        ctx_pct_str,
-        ctx_pct_tv_str,
-        ctx_pct_kl_str,
-        int(np.count_nonzero(ctx_ok)),
-        int(bsz),
-    )
 
 
 class WageringEvaluator:
@@ -263,7 +71,6 @@ class WageringEvaluator:
         logit_calibrator: Optional[Any] = None,
         model_configs_for_sequential_perplexity: Optional[List[Dict[str, Any]]] = None,
         perplexity_load_cache_kwargs: Optional[Dict[str, Any]] = None,
-        debug_batch_prob_alignment: bool = False,
     ):
         """
         Initialize the evaluator.
@@ -299,7 +106,6 @@ class WageringEvaluator:
         )
         self._model_configs_for_sequential_perplexity = model_configs_for_sequential_perplexity
         self._perplexity_load_cache_kwargs = perplexity_load_cache_kwargs or {}
-        self.debug_batch_prob_alignment = bool(debug_batch_prob_alignment)
 
         if self.checkpoint_dir is not None:
             self.checkpoint_dir = Path(checkpoint_dir)
@@ -624,13 +430,7 @@ class WageringEvaluator:
         # RouteLLMBertWagers routes on BERT-encoded prompts only (arXiv:2406.18665); skip HS unless calibrating logits.
         wagering_method_name = type(self.wagering_method).__name__
         needs_hidden_states = (
-            wagering_method_name not in [
-                "EqualWagers",
-                "ZeroOneWagers",
-                "OneZeroWagers",
-                "RouteLLMBertWagers",
-                "RouterDCWagers",
-            ]
+            bool(getattr(self.wagering_method, "requires_hidden_states", True))
             or self.logit_calibrator is not None
         )
         
@@ -898,19 +698,6 @@ class WageringEvaluator:
             batch_logits_transposed = np.transpose(batch_logits, (1, 0, 2))  # [batch_size, num_models, num_options]
             batch_labels = labels[batch_start:batch_end]  # [batch_size]
 
-            if self.debug_batch_prob_alignment:
-                # Per-model predicted class distributions for this batch.
-                batch_model_probs = _softmax_np(batch_logits_transposed)
-                _debug_log_eval_batch_prob_align(
-                    dataset=dataset,
-                    dataset_name=dataset_name,
-                    option_tokens=self.option_tokens,
-                    batch_start=batch_start,
-                    batch_end=batch_end,
-                    batch_model_probs=batch_model_probs,
-                    batch_labels=batch_labels,
-                )
-            
             # Get questions for batch (for wagering methods that need them)
             batch_questions = dataset.x[batch_start:batch_end]  # List of question strings
             batch_questions_per_model = None
@@ -1215,13 +1002,13 @@ class WageringEvaluator:
                     model_logits, all_aggregated_probs, labels
                 )
             if num_options == 2 and isinstance(prob_labs, (list, tuple)) and len(prob_labs) == num_examples:
-                model_brier_scores = _compute_model_brier_scores_soft_binary(
+                model_brier_scores = compute_model_brier_scores_soft_binary(
                     model_logits,
                     gt_positive_probs=np.asarray(prob_labs, dtype=np.float64),
                     positive_option_index=int(pos_idx),
                 )
             else:
-                model_brier_scores = _compute_model_brier_scores(model_logits, labels)
+                model_brier_scores = compute_model_brier_scores(model_logits, labels)
 
             meta_metrics = compute_meta_metrics(
                 wagers_history,
@@ -1425,13 +1212,13 @@ class WageringEvaluator:
                             except ValueError:
                                 pos_idx = 0
                         gt_pos = np.asarray(prob_labs, dtype=np.float64)[subset_mask]
-                        sub_model_brier_scores = _compute_model_brier_scores_soft_binary(
+                        sub_model_brier_scores = compute_model_brier_scores_soft_binary(
                             sub_model_logits,
                             gt_positive_probs=gt_pos,
                             positive_option_index=int(pos_idx),
                         )
                     else:
-                        sub_model_brier_scores = _compute_model_brier_scores(sub_model_logits, sub_labels)
+                        sub_model_brier_scores = compute_model_brier_scores(sub_model_logits, sub_labels)
                     sub_meta = compute_meta_metrics(sub_wagers, sub_best_expert_ids, sub_model_brier_scores)
                     subset_metrics["meta_acc"] = sub_meta.get("meta_acc")
                     subset_metrics["meta_nll"] = sub_meta.get("meta_nll")

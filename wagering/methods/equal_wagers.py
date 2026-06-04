@@ -15,6 +15,10 @@ class EqualWagers(WageringMethod):
     
     This is the baseline method with no trainable parameters.
     """
+
+    def __init__(self, num_models: int, config: Optional[Dict[str, Any]] = None):
+        super().__init__(num_models, config)
+        self.requires_hidden_states = False
     
     def compute_wagers(
         self,

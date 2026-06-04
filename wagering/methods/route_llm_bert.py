@@ -66,8 +66,7 @@ class RouteLLMBertWagers(WageringMethod):
         self.device_str = str(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
         self.device = torch.device(self.device_str)
 
-        # Match centralized configs that pass hidden_state_layers for cache/trainer
-        self.hidden_state_layers = cfg.get("hidden_state_layers", [-1])
+        self.requires_hidden_states = False
         self.concat_prompt_embeddings = not self.pubmedqa_strip_context
         self.expects_per_model_router_prompts = True
 
@@ -407,7 +406,6 @@ class RouteLLMBertWagers(WageringMethod):
                 "ranking_margin": self.ranking_margin,
                 "lr_decay_factor": self.lr_decay_factor,
                 "lr_decay_steps": self.lr_decay_steps,
-                "hidden_state_layers": self.hidden_state_layers,
                 "device": self.device_str,
             },
         }

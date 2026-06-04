@@ -1,26 +1,16 @@
-# Full end-to-end pipeline for NIRT-Router wagering on PubMedQA
-# Neural IRT router: query-conditioned item params + trainable model abilities.
-
-# ============================================================================
-# SHARED CONFIGURATION (used by both training and evaluation)
-# ============================================================================
-
 _include_models:
-  - models/llama3_aloe_8b_alpha.yaml
-  - models/llama3_aloe_8b_alpha.yaml
-  - models/llama3_aloe_8b_alpha.yaml
-  - models/llama3_aloe_8b_alpha.yaml
-
+- models/llama3_aloe_8b_alpha.yaml
+- models/llama3_aloe_8b_alpha.yaml
+- models/llama3_aloe_8b_alpha.yaml
+- models/llama3_aloe_8b_alpha.yaml
 calibrated: false
 _include_calibration: calibration/adaptive_temperature_pubmedqa_1000samples.yaml
-
 wagering_method:
   name: nirt_router
   config:
     encoder_model_name: bert-base-uncased
     tokenizer_use_fast: false
     max_seq_length: 512
-    hidden_state_layers_per_model: [-4,-3,-2,-1]  # Per-model layer picks, aligned with _include_models order
     learning_rate: 1e-04
     lr_decay_factor: 1
     lr_decay_steps: 100
@@ -37,44 +27,29 @@ wagering_method:
     mixture_ce_weight: 0.25
     param_l2_weight: 1e-4
     device: cuda:0
-
 aggregation:
   name: linear_pooling
   config: {}
-
-option_tokens: ["YES", "NO"]
+option_tokens:
+- 'YES'
+- 'NO'
 cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
-
-# ============================================================================
-# TRAINING CONFIGURATION
-# ============================================================================
-
 _include_datasets:
-  - datasets/pubmedqa_context_only.yaml
-
+- datasets/pubmedqa_context_only.yaml
 num_epochs: 5
 checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
-save_every: 100
 training_batch_size: 50
-
 auto_resume: false
 balance_training_datasets: true
 shuffle_data: true
 shuffle_seed: 18
 early_stopping_patience: 5
 early_stopping_criterion: validation
-
 report_to_wandb: true
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: nirt_router_pubmedqa_4
-
-# ============================================================================
-# EVALUATION CONFIGURATION
-# ============================================================================
-
 _include_test_datasets:
-  - datasets/pubmedqa_context_only.yaml
-
+- datasets/pubmedqa_context_only.yaml
 test_datasets:
-  - display_name: pubmedqa_test
+- display_name: pubmedqa_test

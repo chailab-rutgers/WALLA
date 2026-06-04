@@ -1,30 +1,15 @@
-# Full end-to-end pipeline configuration for cluster_saturation_bayes
-# Combines training and evaluation in a single config file
-
-# ============================================================================
-# SHARED CONFIGURATION (used by both training and evaluation)
-# ============================================================================
-
-# Models (shared between training and evaluation)
 _include_models:
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-
-# Apply adaptive temperature scaling to cached option logits before wagering.
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
 calibrated: false
-
-# Wagering method (must match between training and evaluation)
-
-
 wagering_method:
   name: nirt_router
   config:
     encoder_model_name: bert-base-uncased
     tokenizer_use_fast: false
     max_seq_length: 512
-    hidden_state_layers_per_model: [-4,-3,-2,-1]  # Per-model layer picks, aligned with _include_models order
     learning_rate: 5e-5
     lr_decay_factor: 1
     lr_decay_steps: 100
@@ -41,27 +26,18 @@ wagering_method:
     mixture_ce_weight: 0.25
     param_l2_weight: 1e-4
     device: cuda:0
-
-# Aggregation function (must match between training and evaluation)
 aggregation:
   name: linear_pooling
   config: {}
-
-# Binary option tokens for this synthetic dataset.
-option_tokens: ["1", "0"]
-
-# ============================================================================
-# TRAINING CONFIGURATION
-# ============================================================================
+option_tokens:
+- '1'
+- '0'
 cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
 _include_datasets:
-  - datasets/cluster_saturation_bayesX.yaml
-
+- datasets/cluster_saturation_bayesX.yaml
 num_epochs: 5
 checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
-save_every: 100
 training_batch_size: 50
-
 auto_resume: false
 balance_training_datasets: true
 shuffle_data: true
@@ -73,10 +49,5 @@ report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: nirt_router_bayesX_4
-
-# ============================================================================
-# EVALUATION CONFIGURATION
-# ============================================================================
-
 _include_test_datasets:
-  - datasets/cluster_saturation_bayesX.yaml
+- datasets/cluster_saturation_bayesX.yaml

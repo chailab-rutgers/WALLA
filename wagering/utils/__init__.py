@@ -10,6 +10,8 @@ from .checkpoint_utils import (
     get_checkpoint_metadata,
 )
 from . import multi_llm_ensemble
+from . import wagering_metrics
+from . import wagering_plots
 
 __all__ = [
     "load_models_from_config",
@@ -20,4 +22,6 @@ __all__ = [
     "generate_per_model_calibration_dir",
     "get_checkpoint_metadata",
     "multi_llm_ensemble",
+    "wagering_metrics",
+    "wagering_plots",
 ]

@@ -1,77 +1,28 @@
-# Evaluation configuration for KL-uniform wagers on PubMedQA
-# No training is necessary for this inference-only method
-
-# Include model configs (must match training)
 _include_models:
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-  - models/gemma_2_9b_it.yaml
-# Checkpoint path (for inference-only method, this can be a dummy path)
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
 checkpoint_path: /common/users/yl2310/MultiLLMs/checkpoints/dummy_packllm_perplexity_wagers
 cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
-# Apply adaptive temperature scaling to cached option logits before wagering.
 calibrated: false
-
-shuffle_data: true  # Shuffle training data across datasets
-shuffle_seed: 18 #18 #17
-
-# Wagering method - KL divergence to uniform (inference-only)
+shuffle_data: true
+shuffle_seed: 18
 wagering_method:
   name: packllm_perplexity_wagers
   config:
-    confidence_epsilon: 1.0e-8
-
-# Aggregation function
 aggregation:
   name: linear_pooling
   config: {}
-
-# ============================================================================
-# TRAINING CONFIGURATION
-# ============================================================================
-
-# # Training datasets
-# _include_datasets:
-#   - datasets/mmlu.yaml
-#   - datasets/medmcqa.yaml
-
-# # Override dataset-specific settings for training
-# datasets:
-#   - train_split: train
-#   - train_split: train
-
-# # Training parameters
-# num_epochs: 1  # Default: 100 epochs
-# # Base directory for checkpoints (unique subdirectory will be generated)
-# checkpoint_base_dir: /common/users/yl2310/MultiLLMs/checkpoints
-# save_every: 100  # Save checkpoint every 100 batches
-# training_batch_size: 100  # Batch size for training loop (different from batch size for collecting hidden states)
-
-# # Training options
-# auto_resume: false  # Automatically resume from latest checkpoint if available
-# shuffle_data: true  # Shuffle training data across datasets
-# shuffle_seed: 18 #18 #42  # Random seed for shuffling (will be overridden by sweep)
-# early_stopping_patience: 10  # Stop training if no improvement for 10 epochs (default: 10)
-# validation_split_ratio: 0.1  # 10% of data for validation set (for early stopping)
-
-# Include test dataset configs
 _include_test_datasets:
-  - datasets/cluster_saturation_bayesX.yaml
-
-
-    # size: 2  # Use a small sample size for quick evaluation during development
-# Evaluation parameters
-option_tokens: ["1", "0"]
-
-# Evaluation checkpoint/resume (set to false to start fresh)
-resume_eval: false  # Set to true to resume from checkpoint
-
-# Wandb logging
+- datasets/cluster_saturation_bayesX.yaml
+option_tokens:
+- '1'
+- '0'
 report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null

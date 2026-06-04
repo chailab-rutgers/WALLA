@@ -1,32 +1,15 @@
-# Full end-to-end pipeline configuration for weighted score wagers with 1000 samples
-# Combines training and evaluation in a single config file
-
-# ============================================================================
-# SHARED CONFIGURATION (used by both training and evaluation)
-# ============================================================================
-
-# Models (shared between training and evaluation)
 _include_models:
-  - models/gemma_2_9b_it.yaml
-  - models/llama3_1_8b_instruct.yaml
-  - models/llama3_aloe_8b_alpha.yaml
-  - models/biomistral_7b.yaml
-
-
-# Apply adaptive temperature scaling to cached option logits before wagering.
+- models/gemma_2_9b_it.yaml
+- models/llama3_1_8b_instruct.yaml
+- models/llama3_aloe_8b_alpha.yaml
+- models/biomistral_7b.yaml
 calibrated: false
 _include_calibration: calibration/adaptive_temperature_pubmedqa_1000samples.yaml
-
-
-
-# Wagering method (must match between training and evaluation)
-
 wagering_method:
   name: route_llm_bert
   config:
     bert_model_name: bert-base-uncased
     max_seq_length: 512
-    hidden_state_layers: [-1]  # Per-model layer picks, aligned with _include_models order
     learning_rate: 5e-5
     lr_decay_factor: 1
     lr_decay_steps: 100
@@ -39,64 +22,31 @@ wagering_method:
     ranking_loss_weight: 0.0
     ranking_margin: 0.1
     device: cuda:0
-
-    #  Aggregation function (must match between training and evaluation)
 aggregation:
   name: linear_pooling
   config: {}
-
-# Common options
-option_tokens: ["YES", "NO"]
+option_tokens:
+- 'YES'
+- 'NO'
 cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
-
-# ============================================================================
-# TRAINING CONFIGURATION
-# ============================================================================
-
-# Training datasets
 _include_datasets:
-  - datasets/pubmedqa_context_only_wrong_context.yaml
-
-# Override dataset-specific settings for training
-# datasets:
-  # - size: 200
-#   - train_split: auxiliary_train
-#   - train_split: train
-
-# Training parameters
-num_epochs: 5  # Default: 100 epochs
-# Base directory for checkpoints (unique subdirectory will be generated)
+- datasets/pubmedqa_context_only_wrong_context.yaml
+num_epochs: 5
 checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
-save_every: 100  # Save checkpoint every 100 batches
-training_batch_size: 100  # Batch size for training loop (different from batch size for collecting hidden states)
-wager_score_plot_every: 200  # Plot wager score distributions every 100 batches (set to None to disable)
-
-# Training options
-auto_resume: false  # Automatically resume from latest checkpoint if available
-balance_training_datasets: true  # If true, randomly subsample each dataset to min dataset size
-shuffle_data: true  # Shuffle training data across datasets
-shuffle_seed: 18 #18 #1  # Random seed for shuffling (will be overridden by sweep)
+training_batch_size: 100
+wager_score_plot_every: 200
+auto_resume: false
+balance_training_datasets: true
+shuffle_data: true
+shuffle_seed: 18
 early_stopping_patience: 5
 early_stopping_criterion: validation
-# Wandb logging
 report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: route_llm_bert_hetero_4models_pubmedqa_wrong_context
-
-# ============================================================================
-# EVALUATION CONFIGURATION
-# ============================================================================
-
-# Checkpoint path will be automatically set to {checkpoint_dir}/final
-# But you can override it here if needed
-# For testing, this will be set by the pipeline script automatically
 shared_source_tripartition: true
-
-# Test datasets
 _include_test_datasets:
-  - datasets/pubmedqa_context_only_wrong_context.yaml
-# Override dataset-specific settings for evaluation
+- datasets/pubmedqa_context_only_wrong_context.yaml
 test_datasets:
-  - display_name: pubmedqa_test
-
+- display_name: pubmedqa_test

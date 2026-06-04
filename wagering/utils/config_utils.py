@@ -238,13 +238,8 @@ def load_and_merge_configs(
     # Validate required keys
     if "models" not in config or not config["models"]:
         raise ValueError("Config must specify models")
-    has_single_method = "wagering_method" in config
-    phase_shift_cfg = config.get("phase_shift")
-    has_phase_methods = isinstance(phase_shift_cfg, dict) and bool(phase_shift_cfg.get("methods"))
-    if not has_single_method and not has_phase_methods:
-        raise ValueError(
-            "Config must specify wagering_method or phase_shift.methods"
-        )
+    if "wagering_method" not in config:
+        raise ValueError("Config must specify wagering_method")
     if "aggregation" not in config:
         raise ValueError("Config must specify aggregation")
 

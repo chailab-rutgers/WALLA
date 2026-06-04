@@ -9,9 +9,7 @@ from .base import WageringMethod
 from .factory import load_wagering_method
 from .equal_wagers import EqualWagers
 from .centralized_wagers import CentralizedWagers
-from .mse_br_wagers import MSEBrWagers
 from .mse_br_wagers_v2_augmented import MSEBrWagersV2Augmented
-from .mse_br_wagers_v3_augmented import MSEBrWagersV3Augmented
 from .route_llm_bert import RouteLLMBertWagers
 from .router_dc import RouterDCWagers
 from .packllm_perplexity_wagers import PackLLMPerplexityWagers
@@ -23,9 +21,7 @@ __all__ = [
     "load_wagering_method",
     "EqualWagers",
     "CentralizedWagers",
-    "MSEBrWagers",
     "MSEBrWagersV2Augmented",
-    "MSEBrWagersV3Augmented",
     "RouteLLMBertWagers",
     "RouterDCWagers",
     "PackLLMPerplexityWagers",
