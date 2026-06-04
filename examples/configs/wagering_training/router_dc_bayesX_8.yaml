@@ -1,0 +1,84 @@
+# Full end-to-end pipeline configuration for cluster_saturation_bayes
+# Combines training and evaluation in a single config file
+
+# ============================================================================
+# SHARED CONFIGURATION (used by both training and evaluation)
+# ============================================================================
+
+# Models (shared between training and evaluation)
+_include_models:
+  - models/gemma_2_9b_it.yaml
+  - models/gemma_2_9b_it.yaml
+  - models/gemma_2_9b_it.yaml
+  - models/gemma_2_9b_it.yaml
+  - models/gemma_2_9b_it.yaml
+  - models/gemma_2_9b_it.yaml
+  - models/gemma_2_9b_it.yaml
+  - models/gemma_2_9b_it.yaml
+
+# Apply adaptive temperature scaling to cached option logits before wagering.
+calibrated: false
+
+# Wagering method (must match between training and evaluation)
+
+wagering_method:
+  name: router_dc
+  config:
+    encoder_model_name: microsoft/mdeberta-v3-base
+    tokenizer_use_fast: false
+    hidden_state_layers_per_model: [-8,-7,-6,-5,-4,-3,-2,-1]  # Per-model layer picks, aligned with _include_models order
+    max_seq_length: 512
+    learning_rate: 5e-5
+    lr_decay_factor: 1
+    lr_decay_steps: 100
+    temperature: 1.0
+    grad_clip_norm: 1.0
+    weight_decay: 0.01
+    freeze_encoder: false
+    pubmedqa_strip_context: true
+    similarity_function: cos
+    top_k: 3
+    last_k: 3
+    min_pos_p: 0.01
+    neg_mask_threshold: 0.5
+    device: cuda:0
+
+# Aggregation function (must match between training and evaluation)
+aggregation:
+  name: linear_pooling
+  config: {}
+
+# Binary option tokens for this synthetic dataset.
+option_tokens: ["1", "0"]
+cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
+# ============================================================================
+# TRAINING CONFIGURATION
+# ============================================================================
+
+_include_datasets:
+  - datasets/cluster_saturation_bayesX.yaml
+
+num_epochs: 5
+checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
+save_every: 100
+training_batch_size: 20
+
+auto_resume: false
+balance_training_datasets: true
+shuffle_data: true
+shuffle_seed: 18
+early_stopping_patience: 5
+early_stopping_criterion: validation
+use_min_kl_for_early_stopping: true
+report_to_wandb: false
+wandb_project: multi-llm-wagering
+wandb_entity: null
+wandb_name: router_dc_bayesX_8
+
+# ============================================================================
+# EVALUATION CONFIGURATION
+# ============================================================================
+
+_include_test_datasets:
+  - datasets/cluster_saturation_bayesX.yaml
+

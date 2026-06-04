@@ -1,0 +1,19 @@
+# Synthetic Bayesian cluster-saturation forecasting dataset.
+# Generate first with:
+# python scripts/generate_cluster_saturation_bayes_extreme_dataset.py --output-path workdir/datasets/cluster_saturation_bayes_extreme.csv
+name: workdir/datasets/cluster_saturation_bayesX.csv
+display_name: cluster_saturation_bayesX
+text_column: prior_prob
+label_column: binary_label
+probability_label_column: posterior_prob
+positive_label: "1"
+batch_size: 10
+instruct: false
+mixed_context_routing: pubmedqa
+balanced_binary_split: true
+split_ratios: [0.8, 0.1, 0.1]
+train_target_split: train_val
+eval_target_split: test
+split_seed: 18
+prompt_helper: "scripts.generate_cluster_saturation_bayes_extreme_dataset:_format_full_prompt"
+prompt_without_context_helper: "scripts.generate_cluster_saturation_bayes_extreme_dataset:_format_prompt_without_context"

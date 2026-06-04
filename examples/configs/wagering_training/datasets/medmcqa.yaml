@@ -1,0 +1,17 @@
+# MedMCQA dataset configuration
+# Updated to match bayesian-peft format (plain text, no chat templates)
+# Using CommonsenseQA-style format (similar to bayesian-peft's approach for medical MCQs)
+name: openlifescienceai/medmcqa
+display_name: medmcqa
+text_column: question
+label_column: cop
+batch_size: 5
+max_prompt_tokens: 1200
+load_from_disk: false
+trust_remote_code: false
+instruct: false  # Plain text tokenization to match bayesian-peft
+prompt: "Return the label of the correct answer for the question below.\n\nQuestion: {question}\nChoices:\n{choices}\nAnswer:"
+# Answer the multiple choice question below by returning the answer label (A to D)\n\nQuestion: {question}\nChoices:\n{choices}\nAnswer:
+description: ""  # No description prefix to match bayesian-peft format
+# Note: train_split and eval_split are specified in the main config
+

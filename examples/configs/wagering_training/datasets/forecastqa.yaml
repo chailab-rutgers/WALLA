@@ -1,0 +1,28 @@
+# ForecastQA dataset configuration
+# Uses only the `multichoice_questions` field from each split JSON.
+name: json
+display_name: forecastqa
+text_column: question
+label_column: answer
+batch_size: 8
+load_from_disk: false
+trust_remote_code: false
+instruct: false
+
+# Local split files
+train_split: train
+eval_split: validation
+test_split: test
+data_files:
+  train: /common/users/yl2310/MultiLLMs/forecastQA/forecastQA_train_public.json
+  validation: /common/users/yl2310/MultiLLMs/forecastQA/forecastQA_dev_public.json
+  test: /common/users/yl2310/MultiLLMs/forecastQA/forecastQA_test_public.json
+
+# Keep only the multichoice examples from each JSON file.
+field: multichoice_questions
+
+# Internal formatter key consumed by wagering.core.dataset.Dataset.from_datasets.
+dataset_format: forecastqa
+
+prompt: "Return the label of the correct answer for the question below.\n\nQuestion: {question}\nChoices:\n{choices}\nAnswer:"
+description: ""

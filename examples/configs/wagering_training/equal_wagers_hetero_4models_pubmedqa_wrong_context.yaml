@@ -1,0 +1,64 @@
+# Full end-to-end pipeline configuration for weighted score wagers with 1000 samples
+# Combines training and evaluation in a single config file
+
+# ============================================================================
+# SHARED CONFIGURATION (used by both training and evaluation)
+# ============================================================================
+
+# Models (shared between training and evaluation)
+_include_models:
+  - models/gemma_2_9b_it.yaml
+  - models/llama3_1_8b_instruct.yaml
+  - models/llama3_aloe_8b_alpha.yaml
+  - models/biomistral_7b.yaml
+  # - models/qwen3_5_9b.yaml
+  # - models/llama_2_7b.yaml
+
+# Apply adaptive temperature scaling to cached option logits before wagering.
+calibrated: false
+_include_calibration: calibration/adaptive_temperature_pubmedqa_wrong_context.yaml
+
+checkpoint_path: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints/dummy_equal_wagers
+
+
+# Wagering method (must match between training and evaluation)
+wagering_method:
+  name: equal_wagers
+  config: {}
+# Aggregation function (must match between training and evaluation)
+aggregation:
+  name: linear_pooling
+  config: {}
+
+# Common options
+option_tokens: ["YES", "NO"]
+
+cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
+
+report_to_wandb: false
+wandb_project: multi-llm-wagering
+wandb_entity: null
+wandb_name: equal_wagers_hetero_4models_pubmedqa_wrong_context
+
+# ============================================================================
+# EVALUATION CONFIGURATION
+# ============================================================================
+
+# Checkpoint path will be automatically set to {checkpoint_dir}/final
+# But you can override it here if needed
+# For testing, this will be set by the pipeline script automatically
+
+# Test datasets
+
+# When a training and test entry use the same HF ``name`` and the same split (e.g. both ``train``),
+# load that split once logically and partition 6:2:2 (train/val/held-out test) so eval does not
+# repeat training rows. Logits cache follows the *full* unpartitioned split.
+shared_source_tripartition: true
+
+# Test datasets
+_include_test_datasets:
+  - datasets/pubmedqa_context_only_wrong_context.yaml
+# Override dataset-specific settings for evaluation
+test_datasets:
+  - display_name: pubmedqa_test
+

@@ -1,0 +1,11 @@
+# Llama-3.1-8B-Instruct model configuration
+path: meta-llama/Llama-3.1-8B-Instruct
+path_to_load_script: model/default_causal.py
+type: CausalLM
+instruct: false
+load_model_args:
+  device_map: auto
+  max_memory:
+    0: "70GiB"
+load_tokenizer_args: {}
+

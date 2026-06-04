@@ -1,0 +1,100 @@
+# Full end-to-end pipeline configuration for weighted score wagers with 1000 samples
+# Combines training and evaluation in a single config file
+
+# ============================================================================
+# SHARED CONFIGURATION (used by both training and evaluation)
+# ============================================================================
+
+# Models (shared between training and evaluation)
+_include_models:  
+  - models/gemma_2_9b_it.yaml
+  - models/llama3_1_8b_instruct.yaml
+  - models/llama3_aloe_8b_alpha.yaml
+  - models/biomistral_7b.yaml
+  # - models/qwen3_5_9b.yaml
+  # - models/llama_2_7b.yaml
+
+# Apply adaptive temperature scaling to cached option logits before wagering.
+calibrated: false
+_include_calibration: calibration/adaptive_temperature_1000samples_medmcqa.yaml
+
+
+
+# Wagering method (must match between training and evaluation)
+wagering_method:
+  name: mse_br_wagers_v2_augmented
+  config:
+    ablation_study: true  # Enables estimated_score / estimated_average_scores (needed for val scatter plots)
+    hidden_dim: 4096  # Dimension of hidden states (adjust based on model)
+    hidden_layers: [512, 256]  # MLP hidden layer sizes
+    hidden_state_layers: [-1]
+    learning_rate: 5e-7  # Learning rate for router optimizer (lowered from 1e-4 to prevent wager collapse)
+    lr_decay_factor: 1.0  # Decay learning rate by this factor every lr_decay_steps (1.0 = no decay)
+    lr_decay_steps: 100  # Number of optimizer steps between decay applications
+    temperature: 2.0  # Temperature for softmax (higher = softer, prevents one model from dominating)
+    grad_clip_norm: 1.0  # Gradient clipping norm (prevents gradient explosion)
+    normalize_hidden_states: false  # L2 normalize hidden states before projection (prevents scale imbalance)
+    device: cuda:0  # Device to run router on (will use GPU 2 when CUDA_VISIBLE_DEVICES=2,3)
+# Aggregation function (must match between training and evaluation)
+aggregation:
+  name: linear_pooling
+  config: {}
+
+# Common options
+option_tokens: ["A", "B", "C", "D"]
+
+
+# ============================================================================
+# TRAINING CONFIGURATION
+# ============================================================================
+
+# Training datasets
+_include_datasets:
+  - datasets/medmcqa.yaml
+
+# Override dataset-specific settings for training
+datasets:
+  - train_split: train
+
+# Training parameters
+num_epochs: 50  # Default: 100 epochs
+# Base directory for checkpoints (unique subdirectory will be generated)
+checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
+save_every: 100  # Save checkpoint every 100 batches
+training_batch_size: 100  # Batch size for training loop (different from batch size for collecting hidden states)
+wager_score_plot_every: 1000  # Plot wager score distributions every 100 batches (set to None to disable)
+
+# Training options
+auto_resume: false  # Automatically resume from latest checkpoint if available
+balance_training_datasets: true  # If true, randomly subsample each dataset to min dataset size
+shuffle_data: true  # Shuffle training data across datasets
+shuffle_seed: 18 #1  # Random seed for shuffling (will be overridden by sweep)
+early_stopping_patience: 10000  # Stop training if no improvement for 20 epochs (default: 10)
+early_stopping_criterion: online_learning  # Use validation performance for early stopping (default: "validation")
+use_brier_d_regret_for_early_stopping: true
+
+# Wandb logging
+report_to_wandb: true
+wandb_project: multi-llm-wagering
+wandb_entity: null
+wandb_name: mse_br_wagers_v2_4models_medmcqa_calibrated
+
+# ============================================================================
+# EVALUATION CONFIGURATION
+# ============================================================================
+
+# Checkpoint path will be automatically set to {checkpoint_dir}/final
+# But you can override it here if needed
+# For testing, this will be set by the pipeline script automatically
+
+# Test datasets
+shared_source_tripartition: true
+
+_include_test_datasets:
+  - datasets/medmcqa.yaml
+
+# Override dataset-specific settings for evaluation
+test_datasets:
+  - display_name: medmcqa_test
+    eval_split: train
+

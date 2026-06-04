@@ -1,0 +1,103 @@
+# Evaluation configuration for KL-uniform wagers on PubMedQA
+# No training is necessary for this inference-only method
+
+# Include model configs (must match training)
+_include_models:
+  - models/llama3_aloe_8b_alpha.yaml
+  - models/llama3_1_8b_instruct.yaml
+# Checkpoint path (for inference-only method, this can be a dummy path)
+checkpoint_path: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints/dummy_kl_uniform_wagers
+
+# Apply adaptive temperature scaling to cached option logits before wagering.
+calibrated: false
+_include_calibration: calibration/adaptive_temperature_1000samples.yaml
+
+shuffle_data: true  # Shuffle training data across datasets
+shuffle_seed: 18 #18 #17
+
+# Wagering method - KL divergence to uniform (inference-only)
+wagering_method:
+  name: kl_uniform_wagers
+  config:
+    confidence_epsilon: 1.0e-8
+
+# Aggregation function
+aggregation:
+  name: linear_pooling
+  config: {}
+option_tokens: ["A", "B", "C", "D"]
+# ============================================================================
+# TRAINING CONFIGURATION
+# ============================================================================
+
+# # Training datasets
+# _include_datasets:
+#   - datasets/mmlu.yaml
+#   - datasets/medmcqa.yaml
+
+# # Override dataset-specific settings for training
+# datasets:
+#   - train_split: train
+#   - train_split: train
+
+# # Training parameters
+# num_epochs: 1  # Default: 100 epochs
+# # Base directory for checkpoints (unique subdirectory will be generated)
+# checkpoint_base_dir: /common/users/yl2310/MultiLLMs/checkpoints
+# save_every: 100  # Save checkpoint every 100 batches
+# training_batch_size: 100  # Batch size for training loop (different from batch size for collecting hidden states)
+
+# # Training options
+# auto_resume: false  # Automatically resume from latest checkpoint if available
+# shuffle_data: true  # Shuffle training data across datasets
+# shuffle_seed: 18 #18 #42  # Random seed for shuffling (will be overridden by sweep)
+# early_stopping_patience: 10  # Stop training if no improvement for 10 epochs (default: 10)
+# validation_split_ratio: 0.1  # 10% of data for validation set (for early stopping)
+
+# Wandb logging
+report_to_wandb: false
+wandb_project: multi-llm-wagering
+wandb_entity: null
+wandb_name: kl_uniform_wagers_2models
+
+# Include test dataset configs
+# Include test dataset configs
+_include_test_datasets:
+  - datasets/mmlu_full.yaml
+  - datasets/medmcqa.yaml
+
+# Aligns MedMCQA-style eval (HF ``train`` when ``eval_split: train``) with training runs:
+# same 6:2:2 held-out test slice and logits cache, even without a ``datasets`` peer block.
+shared_source_tripartition: true
+# Override dataset-specific settings for evaluation with 1000 samples each
+test_datasets:
+  - display_name: mmlu_full_test
+    eval_split: auxiliary_train
+  - display_name: medmcqa_test
+    eval_split: train  # MedMCQA test split has no labels, use validation
+# # Include OOD dataset configs
+_include_ood_datasets:
+  - datasets/arc_challenge.yaml
+  - datasets/forecastqa.yaml
+
+# Override OOD dataset-specific settings
+ood_datasets:
+  - display_name: arc_challenge_ood
+    eval_split: test
+  - display_name: forecastqa_ood
+    eval_split: train
+
+
+# Evaluation parameters
+
+
+# Evaluation checkpoint/resume (set to false to start fresh)
+resume_eval: false  # Set to true to resume from checkpoint
+
+# Paths
+
+# Wandb logging
+report_to_wandb: false
+wandb_project: multi-llm-wagering
+wandb_entity: null
+wandb_name: kl_uniform_wagers_2models

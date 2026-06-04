@@ -1,0 +1,29 @@
+# Centralized control for adaptive temperature scaling over cached option logits.
+# Each model learns its own calibration head from cached hidden states and labels.
+
+name: adaptive_temperature_scaling
+
+_include_datasets:
+  - ../datasets/mmlu_full.yaml
+
+datasets:
+  - train_split: auxiliary_train
+
+checkpoint_base_dir: /common/users/yl2310/MultiLLMs/calibration_checkpoints
+head_hidden_layers: [256, 64]
+learning_rate: 1e-4
+weight_decay: 1e-5
+num_epochs: 25
+batch_size: 64
+inference_batch_size: 512
+validation_split_ratio: 0.1
+early_stopping_patience: 5
+max_grad_norm: 1.0
+dropout: 0.0
+min_temperature: 0.05
+max_temperature: 10.0
+init_temperature: 1.0
+balance_datasets: true
+reuse_existing: true
+shuffle_seed: 18 #18 #42
+device: cuda:0

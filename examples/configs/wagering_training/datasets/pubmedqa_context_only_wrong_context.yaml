@@ -1,0 +1,34 @@
+# PubMedQA dataset configuration
+# Mixed-context prompting behavior:
+# - Context is assigned per example using balanced randomized routing across model indices.
+# - Each model receives roughly equal numbers of context-bearing prompts.
+# - Non-selected models for each example receive question + long answer only.
+# - Assignment is seeded by top-level `seed` (fallback: `shuffle_seed`) so sweeps vary routing.
+name: qiaojin/PubMedQA
+# Use split-specific subsets:
+# - training mode uses pqa_artificial
+# - evaluation/test mode uses pqa_artificial
+# Both modes intentionally use the HF "train" split, then apply a deterministic
+# balanced split over YES/NO labels with 8:1:1 train:val:test ratios.
+train_config_name: pqa_artificial
+eval_config_name: pqa_artificial
+# Generic split controls used by wagering/utils/dataset_utils.py
+source_config_name: pqa_artificial
+source_split: train
+train_target_split: train_val
+eval_target_split: test
+split_ratios: [0.8, 0.1, 0.1]
+display_name: pubmedqa_context_only
+text_column: question
+label_column: final_decision
+batch_size: 5
+max_prompt_tokens: 1400
+load_from_disk: false
+trust_remote_code: false
+instruct: false
+prompt: "Question:\n{question}\nYou are an expert in medical science and you have classified access to the following context.\nContext:\n{context}\nAnswer with YES or NO. Answer:"
+prompt_without_context: "Question:\n{question}\nAnswer with YES or NO. Answer:"
+description: ""
+# Set option_tokens to [\"YES\", \"NO\"] in your top-level training/eval config when using this dataset.
+# Note: PubMedQA "maybe" labels are automatically filtered out.
+pubmedqa_wrong_context_routing: true

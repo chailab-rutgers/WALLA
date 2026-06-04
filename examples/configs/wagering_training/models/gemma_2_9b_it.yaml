@@ -1,0 +1,9 @@
+# Gemma-2-9B-IT model configuration
+path: google/gemma-2-9b-it
+path_to_load_script: model/default_causal.py
+type: CausalLM
+instruct: false
+load_model_args:
+  device_map: auto
+load_tokenizer_args: {}
+

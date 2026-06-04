@@ -1,0 +1,9 @@
+# Llama3-Aloe-8B-Alpha model configuration
+path: HPAI-BSC/Llama3-Aloe-8B-Alpha
+path_to_load_script: model/default_causal.py
+type: CausalLM
+instruct: false
+load_model_args:
+  device_map: auto
+load_tokenizer_args: {}
+

@@ -1,0 +1,66 @@
+_include_models:
+- models/gemma_2_9b_it.yaml
+- models/llama3_1_8b_instruct.yaml
+- models/llama3_aloe_8b_alpha.yaml
+- models/biomistral_7b.yaml
+calibrated: false
+_include_calibration: calibration/adaptive_temperature_1000samples.yaml
+wagering_method:
+  name: mse_br_wagers_v2_augmented
+  config:
+    ablation_study: true
+    hidden_dim: 4096
+    hidden_layers:
+    - 512
+    - 256
+    hidden_state_layers:
+    - -1
+    learning_rate: 5e-7
+    lr_decay_factor: 1.0
+    lr_decay_steps: 100
+    temperature: 2.0
+    grad_clip_norm: 1.0
+    normalize_hidden_states: false
+    device: cuda:0
+aggregation:
+  name: linear_pooling
+  config: {}
+option_tokens:
+- A
+- B
+- C
+- D
+_include_datasets:
+- datasets/mmlu_full.yaml
+datasets:
+- train_split: auxiliary_train
+num_epochs: 1
+checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
+save_every: 100
+training_batch_size: 100
+wager_score_plot_every: 500
+auto_resume: false
+balance_training_datasets: true
+shuffle_data: true
+shuffle_seed: 18
+early_stopping_patience: 10000
+early_stopping_criterion: online_learning
+use_brier_d_regret_for_early_stopping: true
+report_to_wandb: true
+wandb_project: multi-llm-wagering
+wandb_entity: null
+wandb_name: mse_br_wagers_v2_4models_mmlu_calibrated
+shared_source_tripartition: true
+_include_test_datasets:
+- datasets/mmlu_full.yaml
+test_datasets:
+- display_name: mmlu_full_test
+  eval_split: auxiliary_train
+_include_ood_datasets:
+- datasets/arc_challenge.yaml
+- datasets/forecastqa.yaml
+ood_datasets:
+- display_name: arc_challenge_ood
+  eval_split: test
+- display_name: forecastqa_ood
+  eval_split: train

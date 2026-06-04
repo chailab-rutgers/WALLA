@@ -1,0 +1,15 @@
+# ARC-Easy dataset configuration (for OOD evaluation)
+# Updated to match bayesian-peft prompt format for fair comparison
+name: ['allenai/ai2_arc', 'ARC-Challenge']
+display_name: arc_challenge
+text_column: question
+label_column: answerKey
+batch_size: 8
+max_prompt_tokens: 1200
+load_from_disk: false
+trust_remote_code: false
+instruct: false  # Disable chat templates to match bayesian-peft (they use plain text)
+prompt: "Return the label of the correct answer for the question below.\n\nQuestion: {question}\nChoices:\n{choices}\nAnswer:"
+description: ""  # No description prefix to match bayesian-peft format
+# Note: eval_split is specified in the main config
+

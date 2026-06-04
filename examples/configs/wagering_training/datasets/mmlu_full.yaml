@@ -1,0 +1,17 @@
+# MMLU Full dataset configuration (all subjects)
+# Uses cais/mmlu dataset with the "all" subset
+# Supports both auxiliary training and testing splits
+name: ['cais/mmlu', 'all']
+display_name: mmlu_full
+text_column: question
+label_column: answer
+batch_size: 5
+max_prompt_tokens: 1200
+load_from_disk: false
+trust_remote_code: false
+instruct: false  # Plain text tokenization for consistency with other datasets
+prompt: "Return the label of the correct answer for the question below.\n\nQuestion: {question}\nChoices:\n{choices}\nAnswer:"
+description: ""  # No description prefix
+# Note: train_split and eval_split are specified in the main config
+# train_split: "auxiliary_train" or "train" (depending on available splits)
+# eval_split: "test"
