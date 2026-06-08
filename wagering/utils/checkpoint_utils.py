@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from wagering.utils.dataset_utils import (
-    calibration_dataset_configs_include_pubmedqa,
-    datasets_for_checkpoint_hash,
+    calibration_dataset_config_is_pubmedqa,
+    dataset_for_checkpoint_hash,
 )
 
 
@@ -110,7 +110,7 @@ def _strip_shuffle_seed_fields(config: Dict[str, Any]) -> Dict[str, Any]:
 def generate_checkpoint_dir(
     base_dir: Path,
     models: List[Dict[str, Any]],
-    datasets: List[Dict[str, Any]],
+    dataset: Dict[str, Any],
     wagering_method: Dict[str, Any],
     aggregation: Dict[str, Any],
     create_hash: bool = True,
@@ -122,7 +122,7 @@ def generate_checkpoint_dir(
     Args:
         base_dir: Base directory for checkpoints
         models: List of model configs
-        datasets: List of dataset configs
+        datasets: Training dataset config
         wagering_method: Wagering method config
         aggregation: Aggregation function config
         create_hash: If True, append a hash for uniqueness
@@ -139,8 +139,8 @@ def generate_checkpoint_dir(
     # Validate inputs
     if not models:
         raise ValueError("Must provide at least one model")
-    if not datasets:
-        raise ValueError("Must provide at least one dataset")
+    if not dataset:
+        raise ValueError("Must provide a dataset")
     if not wagering_method or "name" not in wagering_method:
         raise ValueError("wagering_method must have 'name'")
     if not aggregation or "name" not in aggregation:
@@ -151,10 +151,7 @@ def generate_checkpoint_dir(
     if not model_names:
         raise ValueError("No valid model paths found in model configs")
     
-    dataset_names = [get_dataset_name(d) for d in datasets]
-    if not dataset_names:
-        raise ValueError("No valid dataset names found in dataset configs")
-    
+    dataset_name = get_dataset_name(dataset)
     wagering_name = sanitize_name(wagering_method["name"], max_length=20)
     aggregation_name = sanitize_name(aggregation["name"], max_length=20)
     
@@ -165,9 +162,8 @@ def generate_checkpoint_dir(
     models_str = "_".join(sorted(set(model_names)))
     components.append(f"models_{models_str}")
     
-    # Datasets (sorted for consistency)
-    datasets_str = "_".join(sorted(set(dataset_names)))
-    components.append(f"datasets_{datasets_str}")
+    # Dataset
+    components.append(f"dataset_{dataset_name}")
     
     # Wagering method
     components.append(f"wagering_{wagering_name}")
@@ -184,9 +180,8 @@ def generate_checkpoint_dir(
     
     # Add hash for uniqueness if requested
     if create_hash:
-        # Create hash from full config for uniqueness (omit training-only dataset fields).
-        datasets_hashed = datasets_for_checkpoint_hash(datasets)
-        config_str = f"{models}_{datasets_hashed}_{wagering_method}_{aggregation}_{calibration}"
+        dataset_hashed = dataset_for_checkpoint_hash(dataset)
+        config_str = f"{models}_{dataset_hashed}_{wagering_method}_{aggregation}_{calibration}"
         config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
         dir_name = f"{dir_name}_{config_hash}"
     
@@ -196,7 +191,7 @@ def generate_checkpoint_dir(
 def generate_per_model_calibration_dir(
     base_dir: Path,
     model_path: str,
-    datasets: List[Dict[str, Any]],
+    dataset: Dict[str, Any],
     calibration_config: Dict[str, Any],
     create_hash: bool = True,
 ) -> Path:
@@ -214,7 +209,7 @@ def generate_per_model_calibration_dir(
     )
     normalized_payload = {
         "model_path": model_path,
-        "datasets": _stable_json_value(datasets),
+        "dataset": _stable_json_value(dataset),
         "calibration": _stable_json_value(_strip_shuffle_seed_fields(calibration_config)),
     }
     serialized = json.dumps(
@@ -230,7 +225,7 @@ def generate_per_model_calibration_dir(
 
 def get_checkpoint_metadata(
     models: List[Dict[str, Any]],
-    datasets: List[Dict[str, Any]],
+    dataset: Dict[str, Any],
     wagering_method: Dict[str, Any],
     aggregation: Dict[str, Any],
     calibration: Optional[Dict[str, Any]] = None,
@@ -240,7 +235,7 @@ def get_checkpoint_metadata(
     
     Args:
         models: List of model configs
-        datasets: List of dataset configs
+        datasets: Training dataset config
         wagering_method: Wagering method config
         aggregation: Aggregation function config
         
@@ -252,17 +247,16 @@ def get_checkpoint_metadata(
     """
     if not models:
         raise ValueError("Must provide at least one model")
-    if not datasets:
-        raise ValueError("Must provide at least one dataset")
+    if not dataset:
+        raise ValueError("Must provide a dataset")
     
     model_names = [m.get("path", "unknown") for m in models]
-    dataset_names = [get_dataset_name(d) for d in datasets]
+    training_dataset = get_dataset_name(dataset)
     
     metadata = {
         "models": model_names,
         "model_count": len(models),
-        "datasets": dataset_names,
-        "dataset_count": len(datasets),
+        "training_dataset": training_dataset,
         "wagering_method": wagering_method.get("name", "unknown"),
         "wagering_config": wagering_method.get("config", {}),
         "aggregation_method": aggregation.get("name", "unknown"),
@@ -282,7 +276,7 @@ def get_checkpoint_metadata(
 def generate_calibration_dir(
     base_dir: Path,
     models: List[Dict[str, Any]],
-    datasets: List[Dict[str, Any]],
+    dataset: Dict[str, Any],
     calibration_config: Dict[str, Any],
     create_hash: bool = True,
 ) -> Path:
@@ -300,8 +294,8 @@ def generate_calibration_dir(
 
     if not models:
         raise ValueError("Must provide at least one model")
-    if not datasets:
-        raise ValueError("Must provide at least one dataset")
+    if not dataset:
+        raise ValueError("Must provide a dataset")
 
     ordered_model_paths = [m["path"] for m in models if "path" in m]
     if not ordered_model_paths:
@@ -309,7 +303,7 @@ def generate_calibration_dir(
 
     # PubMedQA: ensemble order and duplicate slots matter (mixed-context routing).
     # Non-PubMedQA: reuse calibration across order/duplicates; key by unique paths only.
-    pubmedqa_calibration = calibration_dataset_configs_include_pubmedqa(datasets)
+    pubmedqa_calibration = calibration_dataset_config_is_pubmedqa(dataset)
     if pubmedqa_calibration:
         models_for_hash = ordered_model_paths
         model_names = [get_model_name(path) for path in ordered_model_paths]
@@ -319,18 +313,18 @@ def generate_calibration_dir(
         model_names = [get_model_name(path) for path in models_for_hash]
         indexed_model_names = [f"u{idx}_{name}" for idx, name in enumerate(model_names)]
 
-    dataset_names = [get_dataset_name(d) for d in datasets]
+    dataset_name = get_dataset_name(dataset)
     calibration_name = sanitize_name(calibration_config.get("name", "adaptive_temperature_scaling"), max_length=25)
 
     components = [
         f"models_{'_'.join(indexed_model_names)}",
-        f"datasets_{'_'.join(sorted(set(dataset_names)))}",
+        f"dataset_{dataset_name}",
         f"calibration_{calibration_name}",
     ]
 
     normalized_payload = {
         "models": models_for_hash,
-        "datasets": _stable_json_value(datasets_for_checkpoint_hash(datasets)),
+        "dataset": _stable_json_value(dataset_for_checkpoint_hash(dataset)),
         "calibration": _stable_json_value(_strip_shuffle_seed_fields(calibration_config)),
     }
     serialized = json.dumps(normalized_payload, sort_keys=True, separators=(",", ":"), default=str)
@@ -343,10 +337,10 @@ def generate_calibration_dir(
     # Avoid filesystem component limits (typically 255 chars) when many models are listed.
     if len(dir_name) > 220:
         models_digest = hashlib.md5("|".join(models_for_hash).encode("utf-8")).hexdigest()[:8]
-        datasets_digest = hashlib.md5("|".join(sorted(set(dataset_names))).encode("utf-8")).hexdigest()[:8]
+        datasets_digest = hashlib.md5(dataset_name.encode("utf-8")).hexdigest()[:8]
         compact_dir_name = (
             f"models_{len(models_for_hash)}m_{models_digest}_"
-            f"datasets_{len(set(dataset_names))}d_{datasets_digest}_"
+            f"dataset_{datasets_digest}_"
             f"calibration_{calibration_name}"
         )
         dir_name = f"{compact_dir_name}_{config_hash}" if create_hash else compact_dir_name

@@ -55,17 +55,17 @@ class WageringMethod(ABC):
             models: List of LLM models (optional)
             model_logits: Pre-computed logits from models
                 Shape [batch_size, num_models, num_options] for batch mode
-                Shape [num_models, num_options] for single sample (backwards compatibility)
+                Shape [num_models, num_options] for single sample
             gold_label: Optional ground truth labels
                 Shape [batch_size] for batch mode
-                Scalar (int) for single sample (backwards compatibility)
+                Scalar (int) for single sample
             **kwargs: Additional keyword arguments
                 hidden_states: np.ndarray of shape [batch_size, num_models, hidden_dim] or list of arrays
                 
         Returns:
             Dictionary with:
                 "wagers": np.ndarray of shape [batch_size, num_models] with non-negative weights
-                For single samples (backwards compatibility): shape [num_models]
+                For single samples: shape [num_models]
                 "nash_gap": Optional float or np.ndarray of shape [batch_size] (if computed)
         """
         pass
@@ -90,13 +90,13 @@ class WageringMethod(ABC):
         Args:
             aggregated_probs: Aggregated probabilities
                 Shape [batch_size, num_options] for batch mode
-                Shape [num_options] for single sample (backwards compatibility)
+                Shape [num_options] for single sample
             aggregated_pred: Predicted class indices
                 Shape [batch_size] for batch mode
-                Scalar (int) for single sample (backwards compatibility)
+                Scalar (int) for single sample
             gold_label: Ground truth class indices
                 Shape [batch_size] for batch mode
-                Scalar (int) for single sample (backwards compatibility)
+                Scalar (int) for single sample
             model_probs: Per-model probabilities
                 Shape [batch_size, num_models, num_options] for batch mode
                 Shape [num_models, num_options] for single sample
@@ -157,66 +157,25 @@ class WageringMethod(ABC):
         """
         import os
         import tempfile
-        import logging
         os.makedirs(save_directory, exist_ok=True)
-        # Default implementation: save state dict
         import torch
-        log = logging.getLogger("wagering")
 
         state = self.state_dict()
         target_path = os.path.join(save_directory, "wagering_state.pt")
 
-        # Write to a temporary file in the same directory and atomically replace target.
-        # This avoids partial/corrupted checkpoints on flaky network filesystems.
-        attempts = [
-            {},
-            {"_use_new_zipfile_serialization": False},
-        ]
-        last_error = None
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=".pt.tmp",
+            prefix="wagering_state_",
+            dir=save_directory,
+            delete=False,
+        ) as tmp_file:
+            tmp_path = tmp_file.name
+            torch.save(state, tmp_file)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
 
-        for attempt_idx, attempt_kwargs in enumerate(attempts, start=1):
-            tmp_path = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="wb",
-                    suffix=".pt.tmp",
-                    prefix="wagering_state_",
-                    dir=save_directory,
-                    delete=False,
-                ) as tmp_file:
-                    tmp_path = tmp_file.name
-                    try:
-                        torch.save(state, tmp_file, **attempt_kwargs)
-                    except TypeError:
-                        # Some wrapped/older torch.save variants reject extra kwargs.
-                        # Retry without kwargs for compatibility.
-                        if attempt_kwargs:
-                            torch.save(state, tmp_file)
-                        else:
-                            raise
-                    tmp_file.flush()
-                    os.fsync(tmp_file.fileno())
-
-                os.replace(tmp_path, target_path)
-                return
-            except Exception as exc:
-                last_error = exc
-                if tmp_path is not None:
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
-                log.warning(
-                    "Checkpoint save attempt %d failed at %s (kwargs=%s): %s",
-                    attempt_idx,
-                    target_path,
-                    attempt_kwargs,
-                    exc,
-                )
-
-        raise RuntimeError(
-            f"Failed to save wagering checkpoint to {target_path} after {len(attempts)} attempts"
-        ) from last_error
+        os.replace(tmp_path, target_path)
     
     def load_pretrained(self, save_directory: str):
         """

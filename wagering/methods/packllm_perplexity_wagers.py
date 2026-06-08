@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, List
 import numpy as np
 
 from .base import WageringMethod
-from wagering.core.model import WhiteboxModel
+from wagering.utils.tensor_helpers import stable_row_softmax_2d
 
 
 class PackLLMPerplexityWagers(WageringMethod):
@@ -45,21 +45,17 @@ class PackLLMPerplexityWagers(WageringMethod):
 
         safe_ppl = np.clip(perplexities_2d.astype(np.float64, copy=False), self.epsilon, None)
         scores = -np.log(safe_ppl) / self.tau
-
-        max_scores = np.max(scores, axis=1, keepdims=True)
-        exp_scores = np.exp(scores - max_scores)
-        denom = np.sum(exp_scores, axis=1, keepdims=True)
-        wagers = exp_scores / np.clip(denom, 1e-20, None)
+        wagers = stable_row_softmax_2d(scores)
 
         if not np.all(np.isfinite(wagers)):
-            return np.ones((batch_size, self.num_models), dtype=np.float32) / self.num_models
+            raise ValueError("PackLLMPerplexityWagers produced non-finite wagers")
 
         return wagers.astype(np.float32, copy=False)
 
     def compute_wagers(
         self,
         question: Optional[str] = None,
-        models: Optional[List[WhiteboxModel]] = None,
+        models: Optional[List[Any]] = None,
         model_logits: Optional[np.ndarray] = None,
         gold_label: Optional[np.ndarray] = None,
         **kwargs,

@@ -30,7 +30,7 @@ class WageringAnalytics:
         wagering_method: Any,
         aggregation_function: Any,
         models: List[Any],
-        datasets: List[Any],
+        dataset: Any,
         shuffle_data: bool,
         shuffle_seed: int,
         early_stopping_patience: int,
@@ -49,7 +49,7 @@ class WageringAnalytics:
             wagering_method: WageringMethod instance
             aggregation_function: AggregationFunction instance
             models: List of models
-            datasets: List of training datasets
+            datasets: Training dataset
             shuffle_data: Whether data was shuffled
             shuffle_seed: Seed for data shuffling
             early_stopping_patience: Early stopping patience
@@ -79,8 +79,6 @@ class WageringAnalytics:
             row["wagering_hidden_dim"] = wagering_method.common_hidden_dim
         if hasattr(wagering_method, 'hidden_layers'):
             row["wagering_hidden_layers"] = str(wagering_method.hidden_layers)
-        if hasattr(wagering_method, 'hidden_state_layers'):
-            row["wagering_hidden_state_layers"] = str(wagering_method.hidden_state_layers)
         if hasattr(wagering_method, 'learning_rate'):
             row["wagering_learning_rate"] = wagering_method.learning_rate
         if hasattr(wagering_method, 'temperature'):
@@ -103,7 +101,7 @@ class WageringAnalytics:
         
         # Training hyperparameters
         row["num_models"] = len(models)
-        row["num_datasets"] = len(datasets)
+        row["num_datasets"] = 1
         row["shuffle_data"] = shuffle_data
         row["shuffle_seed"] = shuffle_seed
         row["early_stopping_patience"] = early_stopping_patience
@@ -193,8 +191,6 @@ class WageringAnalytics:
             row["wagering_hidden_dim"] = wagering_method.common_hidden_dim
         if hasattr(wagering_method, 'hidden_layers'):
             row["wagering_hidden_layers"] = str(wagering_method.hidden_layers)
-        if hasattr(wagering_method, 'hidden_state_layers'):
-            row["wagering_hidden_state_layers"] = str(wagering_method.hidden_state_layers)
         if hasattr(wagering_method, 'learning_rate'):
             row["wagering_learning_rate"] = wagering_method.learning_rate
         if hasattr(wagering_method, 'temperature'):
@@ -270,11 +266,7 @@ class WageringAnalytics:
                 and not np.isnan(results.get("avg_inference_time_per_batch_s", np.nan))
                 else None
             )
-            row["d_regret"] = results.get("d_regret") if results.get("d_regret") is not None and not np.isnan(results.get("d_regret", np.nan)) else None
             row["brier_d_regret"] = results.get("brier_d_regret") if results.get("brier_d_regret") is not None and not np.isnan(results.get("brier_d_regret", np.nan)) else None
-            row["meta_acc"] = results.get("meta_acc") if results.get("meta_acc") is not None and not np.isnan(results.get("meta_acc", np.nan)) else None
-            row["meta_nll"] = results.get("meta_nll") if results.get("meta_nll") is not None and not np.isnan(results.get("meta_nll", np.nan)) else None
-            row["meta_auc"] = results.get("meta_auc") if results.get("meta_auc") is not None and not np.isnan(results.get("meta_auc", np.nan)) else None
             row["kendall_tau"] = results.get("kendall_tau") if results.get("kendall_tau") is not None and not np.isnan(results.get("kendall_tau", np.nan)) else None
             row["best_model_mrr"] = results.get("best_model_mrr") if results.get("best_model_mrr") is not None and not np.isnan(results.get("best_model_mrr", np.nan)) else None
             row["brier_best_wager_prob_mean"] = results.get("brier_best_wager_prob_mean")
@@ -332,7 +324,6 @@ class WageringAnalytics:
                 'shuffle_data', 'shuffle_seed', 'early_stopping_patience',
                 'datasets', 'models', 'training_datasets', 'evaluation_dataset',
                 'wagering_hidden_dim', 'wagering_hidden_layers',
-                'wagering_hidden_state_layers',
                 'wagering_learning_rate', 'wagering_temperature', 'wagering_grad_clip_norm',
                 'wagering_normalize_hidden_states', 'wagering_device', 'seed', 'dataset_size'
             ]
@@ -341,7 +332,7 @@ class WageringAnalytics:
                 if (col.startswith('final_') or col in [
                     'accuracy', 'nll', 'brier', 'bernoulli_kl', 'bernoulli_tv', 'auc', 'ece', 'num_examples',
                     'inverse_hhi', 'avg_inference_time_per_batch_s',
-                    'd_regret', 'brier_d_regret', 'meta_acc', 'meta_nll', 'meta_auc',
+                    'brier_d_regret',
                     'kendall_tau', 'best_model_mrr',
                     'brier_best_wager_prob_mean', 'brier_best_wager_prob_var',
                 ] or col.startswith('wager_prob_mean_model_') or col.startswith('wager_prob_var_model_'))
@@ -419,7 +410,7 @@ class WageringAnalytics:
         """
         result_columns = [
             col for col in analytics_df.columns
-            if col.startswith('final_') or col in ['accuracy', 'nll', 'brier', 'auc', 'ece', 'num_examples', 'd_regret', 'meta_acc', 'meta_nll', 'meta_auc']
+            if col.startswith('final_') or col in ['accuracy', 'nll', 'brier', 'auc', 'ece', 'num_examples', 'brier_d_regret', 'kendall_tau', 'best_model_mrr']
         ]
         settings_columns = [
             col for col in analytics_df.columns
@@ -440,7 +431,7 @@ class WageringAnalytics:
         """
         result_columns = [
             col for col in analytics_df.columns
-            if col.startswith('final_') or col in ['accuracy', 'nll', 'brier', 'auc', 'ece', 'num_examples', 'd_regret', 'meta_acc', 'meta_nll', 'meta_auc']
+            if col.startswith('final_') or col in ['accuracy', 'nll', 'brier', 'auc', 'ece', 'num_examples', 'brier_d_regret', 'kendall_tau', 'best_model_mrr']
             or (pd.api.types.is_numeric_dtype(analytics_df[col]) 
                 and col not in ['num_models', 'num_datasets', 'shuffle_seed', 'early_stopping_patience', 
                                'seed', 'num_examples'])

@@ -2,7 +2,7 @@ import logging
 import os
 from copy import deepcopy
 from dataclasses import asdict
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 import torch
 from transformers import (
@@ -32,14 +32,12 @@ class WhiteboxModel:
         model_path: Optional[str] = None,
         model_type: str = "CausalLM",
         generation_parameters: GenerationParameters = GenerationParameters(),
-        instruct: bool = False,
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.model_path = model_path
         self.model_type = model_type
         self.generation_parameters = generation_parameters
-        self.instruct = instruct
 
     def _validate_args(self, args: Dict) -> Dict:
         args_copy = args.copy()
@@ -170,7 +168,6 @@ class WhiteboxModel:
         model_path: str,
         generation_params: Optional[Dict] = None,
         add_bos_token: bool = True,
-        instruct: bool = False,
         **kwargs,
     ) -> "WhiteboxModel":
         """Load a HuggingFace model and tokenizer into a WhiteboxModel."""
@@ -253,42 +250,16 @@ class WhiteboxModel:
             model_path=model_path,
             model_type=model_type,
             generation_parameters=generation_parameters,
-            instruct=instruct,
         )
 
     def tokenize(
         self,
-        texts: Union[List[str], List[List[Dict[str, str]]]],
+        texts: List[str],
     ) -> Dict[str, torch.Tensor]:
         """Tokenize text prompts for generation."""
-        add_start_symbol = True
-
-        if self.instruct:
-            chat_template = getattr(self.tokenizer, "chat_template", None)
-            if chat_template is not None:
-                formatted_texts: List[str] = []
-                for chat in texts:
-                    if isinstance(chat, str):
-                        chat = [{"role": "user", "content": chat}]
-                    try:
-                        formatted = self.tokenizer.apply_chat_template(
-                            chat,
-                            add_generation_prompt=True,
-                            tokenize=False,
-                        )
-                    except (ValueError, TypeError):
-                        if isinstance(chat, list) and chat and isinstance(chat[0], dict):
-                            formatted = str(chat[0].get("content", ""))
-                        else:
-                            formatted = str(chat)
-                    formatted_texts.append(formatted)
-
-                texts = formatted_texts
-                add_start_symbol = False
-
         return self.tokenizer(
             texts,
             padding=True,
             return_tensors="pt",
-            add_special_tokens=add_start_symbol,
+            add_special_tokens=True,
         )

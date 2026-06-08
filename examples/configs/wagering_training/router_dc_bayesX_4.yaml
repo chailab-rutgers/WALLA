@@ -18,7 +18,6 @@ wagering_method:
     weight_decay: 0.01
     freeze_encoder: false
     pubmedqa_strip_context: true
-    similarity_function: cos
     top_k: 3
     last_k: 3
     min_pos_p: 0.01
@@ -30,14 +29,10 @@ aggregation:
 option_tokens:
 - '1'
 - '0'
-cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
-_include_datasets:
-- datasets/cluster_saturation_bayesX.yaml
+cache_path: /research/projects/ecoai/yl2310/WALLA/cache
 num_epochs: 5
-checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
+checkpoint_base_dir: /research/projects/ecoai/yl2310/WALLA/checkpoints
 training_batch_size: 20
-auto_resume: false
-balance_training_datasets: true
 shuffle_data: true
 shuffle_seed: 18
 early_stopping_patience: 5
@@ -47,5 +42,5 @@ report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: router_dc_bayesX_4
-_include_test_datasets:
-- datasets/cluster_saturation_bayesX.yaml
+included_dataset: datasets/cluster_saturation_bayesX.yaml
+included_test_dataset: datasets/cluster_saturation_bayesX.yaml

@@ -193,3 +193,5 @@ test/
 
 .vscode/
 uv.lock
+
+examples/configs/wagering_training/.tmp*

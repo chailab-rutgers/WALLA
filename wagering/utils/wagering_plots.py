@@ -19,33 +19,22 @@ from wagering.core.dataset import Dataset
 log = logging.getLogger("wagering")
 
 
-def resolve_training_dataset_names(
+def resolve_training_dataset_name(
     metadata: Dict[str, Any],
-    datasets: List[Dataset],
-) -> List[str]:
-    names: List[str] = []
+    dataset: Dataset,
+) -> str:
     if isinstance(metadata, dict):
-        for key in ["training_datasets", "dataset_names", "datasets", "train_datasets"]:
+        for key in ("training_dataset", "dataset_name", "dataset"):
             value = metadata.get(key)
-            if isinstance(value, (list, tuple)) and len(value) > 0:
-                names = [str(x) for x in value][: len(datasets)]
-                break
-            if isinstance(value, str) and len(datasets) == 1:
-                names = [value]
-                break
-    if not names:
-        inferred = []
-        for i, ds in enumerate(datasets):
-            ds_name = (
-                getattr(ds, "name", None)
-                or getattr(ds, "dataset_name", None)
-                or getattr(ds, "path", None)
-            )
-            inferred.append(str(ds_name) if ds_name else f"dataset_{i}")
-        names = inferred[: len(datasets)]
-    if len(names) != len(datasets):
-        names = [f"dataset_{i}" for i in range(len(datasets))]
-    return names
+            if isinstance(value, str) and value:
+                return value
+    ds_name = (
+        getattr(dataset, "name", None)
+        or getattr(dataset, "dataset_name", None)
+        or getattr(dataset, "path", None)
+        or getattr(dataset, "cache_dataset_name", None)
+    )
+    return str(ds_name) if ds_name else "dataset"
 
 
 def get_model_names_for_plot(
@@ -54,10 +43,12 @@ def get_model_names_for_plot(
     num_models: int,
 ) -> List[str]:
     model_names: List[str] = []
-    if isinstance(metadata, dict) and "models" in metadata:
-        raw_names = metadata["models"]
-        if isinstance(raw_names, (list, tuple)):
-            model_names = [str(name) for name in raw_names][:num_models]
+    if isinstance(metadata, dict):
+        for key in ("models", "model_names"):
+            raw_names = metadata.get(key)
+            if isinstance(raw_names, (list, tuple)):
+                model_names = [str(name) for name in raw_names][:num_models]
+                break
 
     if len(model_names) != num_models and models:
         inferred_names: List[str] = []
@@ -76,84 +67,48 @@ def get_model_names_for_plot(
 
 
 def get_validation_context_assignment_mask(
-    datasets: List[Dataset],
+    dataset: Dataset,
     num_examples: int,
     num_models_total: int,
-    dataset_indices: Optional[np.ndarray] = None,
     local_indices: Optional[np.ndarray] = None,
 ) -> Tuple[Optional[np.ndarray], Optional[str]]:
-    """
-    Per-example context assignment mask for mixed-context datasets (visualization only).
-    """
-    if dataset_indices is None or local_indices is None:
+    """Per-example context assignment mask for mixed-context datasets (visualization only)."""
+    if local_indices is None:
         return None, None
 
-    dataset_indices_arr = np.asarray(dataset_indices)
     local_indices_arr = np.asarray(local_indices)
-    if (
-        dataset_indices_arr.shape[0] != num_examples
-        or local_indices_arr.shape[0] != num_examples
-    ):
+    if local_indices_arr.shape[0] != num_examples:
         log.debug(
             "Skipping context-aware masking due to shape mismatch: "
-            f"num_examples={num_examples}, dataset_indices={dataset_indices_arr.shape}, "
-            f"local_indices={local_indices_arr.shape}"
+            f"num_examples={num_examples}, local_indices={local_indices_arr.shape}"
         )
+        return None, None
+
+    assignment_list = getattr(dataset, "pubmedqa_context_assignment_by_example", None)
+    if not isinstance(assignment_list, list) or len(assignment_list) == 0:
+        return None, None
+
+    assignments = np.asarray(assignment_list, dtype=np.int32)
+    if assignments.ndim != 1:
         return None, None
 
     assignment_mask = np.ones((num_examples, num_models_total), dtype=bool)
-    has_mixed_context_dataset = False
-    has_pubmedqa = False
-    has_race = False
-
-    for dataset_idx in range(len(datasets)):
-        dataset_row_mask = dataset_indices_arr == dataset_idx
-        if not np.any(dataset_row_mask):
-            continue
-
-        dataset = datasets[dataset_idx]
-        assignment_list = None
-        if hasattr(dataset, "pubmedqa_context_assignment_by_example"):
-            assignment_list = getattr(dataset, "pubmedqa_context_assignment_by_example", None)
-            has_pubmedqa = True
-        elif hasattr(dataset, "race_context_assignment_by_example"):
-            assignment_list = getattr(dataset, "race_context_assignment_by_example", None)
-            has_race = True
-
-        if not isinstance(assignment_list, list) or len(assignment_list) == 0:
-            continue
-
-        has_mixed_context_dataset = True
-        assignments = np.asarray(assignment_list, dtype=np.int32)
-        if assignments.ndim != 1:
-            continue
-
-        row_indices = np.flatnonzero(dataset_row_mask)
-        row_local_indices = local_indices_arr[row_indices]
-        valid_local_idx_mask = (row_local_indices >= 0) & (
-            row_local_indices < assignments.shape[0]
-        )
-        if not np.any(valid_local_idx_mask):
-            continue
-
-        mapped_rows = row_indices[valid_local_idx_mask]
-        mapped_models = assignments[row_local_indices[valid_local_idx_mask]]
-        valid_model_idx_mask = (mapped_models >= 0) & (mapped_models < num_models_total)
-        if not np.any(valid_model_idx_mask):
-            continue
-
-        mapped_rows = mapped_rows[valid_model_idx_mask]
-        mapped_models = mapped_models[valid_model_idx_mask]
-        assignment_mask[mapped_rows, :] = False
-        assignment_mask[mapped_rows, mapped_models] = True
-
-    if not has_mixed_context_dataset:
+    row_local_indices = local_indices_arr
+    valid_local_idx_mask = (row_local_indices >= 0) & (row_local_indices < assignments.shape[0])
+    if not np.any(valid_local_idx_mask):
         return None, None
-    if has_pubmedqa:
-        return assignment_mask, "pubmedqa"
-    if has_race:
-        return assignment_mask, "race"
-    return assignment_mask, None
+
+    mapped_rows = np.flatnonzero(valid_local_idx_mask)
+    mapped_models = assignments[row_local_indices[valid_local_idx_mask]]
+    valid_model_idx_mask = (mapped_models >= 0) & (mapped_models < num_models_total)
+    if not np.any(valid_model_idx_mask):
+        return None, None
+
+    mapped_rows = mapped_rows[valid_model_idx_mask]
+    mapped_models = mapped_models[valid_model_idx_mask]
+    assignment_mask[mapped_rows, :] = False
+    assignment_mask[mapped_rows, mapped_models] = True
+    return assignment_mask, "pubmedqa"
 
 
 class WageringPlotter:
@@ -164,46 +119,192 @@ class WageringPlotter:
         *,
         checkpoint_dir: Optional[Path],
         metadata: Dict[str, Any],
-        datasets: List[Dataset],
+        dataset: Optional[Dataset],
         models: List[Any],
         log_wandb_plot: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         self.checkpoint_dir = checkpoint_dir
         self.metadata = metadata
-        self.datasets = datasets
+        self.dataset = dataset
         self.models = models
         self.log_wandb_plot = log_wandb_plot
+
+    def plot_eval_wagers(
+        self,
+        results: Dict[str, Any],
+        *,
+        log_dataset_plot: Optional[Callable[[str, str, Path], None]] = None,
+    ) -> None:
+        """Plot wagers over time and average wagers per model for one evaluation dataset."""
+        if self.checkpoint_dir is None or "wagers_history" not in results:
+            return
+
+        wagers_history = results["wagers_history"]
+        dataset_name = results["dataset_name"]
+        num_examples, num_models = wagers_history.shape
+        model_names = get_model_names_for_plot(self.metadata, self.models, num_models)
+
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        time_steps = np.arange(1, num_examples + 1)
+        for i in range(num_models):
+            ax.plot(time_steps, wagers_history[:, i], label=model_names[i], alpha=0.7, linewidth=1.5)
+        ax.set_xlabel("Evaluation Step", fontsize=11)
+        ax.set_ylabel("Wager (Weight)", fontsize=11)
+        ax.set_title(f"Wagers Over Time - {dataset_name}", fontsize=12, fontweight="bold")
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim([0, 1.05])
+        plt.tight_layout()
+
+        save_path = self.checkpoint_dir / f"wagers_over_time_{dataset_name}.png"
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        log.debug(f"Saved wagers plot to {save_path}")
+        if log_dataset_plot is not None:
+            log_dataset_plot(dataset_name, "wagers_plot", save_path)
+        plt.close()
+
+        self.plot_average_wagers_by_model(
+            wagers_history,
+            dataset_name,
+            model_names,
+            log_dataset_plot=log_dataset_plot,
+        )
+
+    def plot_average_wagers_by_model(
+        self,
+        wagers_history: np.ndarray,
+        dataset_name: str,
+        model_names: List[str],
+        *,
+        log_dataset_plot: Optional[Callable[[str, str, Path], None]] = None,
+    ) -> None:
+        if self.checkpoint_dir is None:
+            return
+
+        num_models = wagers_history.shape[1]
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        avg_wagers = np.mean(wagers_history, axis=0)
+        bars = ax.bar(range(num_models), avg_wagers, alpha=0.7, color="steelblue")
+        for bar, wager in zip(bars, avg_wagers):
+            height = bar.get_height()
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{wager:.4f}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
+        ax.set_xlabel("Model", fontsize=11)
+        ax.set_ylabel("Average Wager (Weight)", fontsize=11)
+        ax.set_title(f"Average Wagers by Model - {dataset_name}", fontsize=12, fontweight="bold")
+        ax.set_xticks(range(num_models))
+        ax.set_xticklabels(model_names, rotation=45, ha="right")
+        ax.grid(True, alpha=0.3, axis="y")
+        ax.set_ylim([0, 1.05])
+        plt.tight_layout()
+
+        save_path = self.checkpoint_dir / f"average_wagers_{dataset_name}.png"
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        log.debug(f"Saved average wagers plot to {save_path}")
+        if log_dataset_plot is not None:
+            log_dataset_plot(dataset_name, "average_wagers_plot", save_path)
+        plt.close()
+
+    def plot_average_wagers_across_datasets(
+        self,
+        all_results: Dict[str, Dict[str, Any]],
+        eval_type: str = "test",
+        *,
+        log_multi_dataset_plot: Optional[Callable[[str, Path], None]] = None,
+    ) -> None:
+        """Bar chart of average wagers per model, grouped by dataset."""
+        if self.checkpoint_dir is None or not all_results:
+            return
+
+        dataset_names: List[str] = []
+        all_wagers_list: List[np.ndarray] = []
+
+        for dataset_name, result in all_results.items():
+            is_ood = dataset_name.startswith("ood_")
+            if eval_type == "test" and is_ood:
+                continue
+            if eval_type == "ood" and not is_ood:
+                continue
+
+            if "wagers_history" in result:
+                all_wagers_list.append(result["wagers_history"])
+                display_name = dataset_name.replace("ood_", "")
+                if is_ood and eval_type == "test_and_ood":
+                    display_name = f"[OOD] {display_name}"
+                dataset_names.append(display_name)
+
+        if not all_wagers_list:
+            return
+
+        num_datasets = len(all_wagers_list)
+        num_models = all_wagers_list[0].shape[1]
+        model_names = get_model_names_for_plot(self.metadata, self.models, num_models)
+
+        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+        x = np.arange(num_datasets)
+        width = 0.8 / num_models
+
+        for i in range(num_models):
+            avg_wagers = [
+                float(np.mean(all_wagers_list[dataset_idx][:, i]))
+                for dataset_idx in range(num_datasets)
+            ]
+            ax.bar(x + i * width, avg_wagers, width, label=model_names[i], alpha=0.8)
+
+        ax.set_xlabel("Dataset", fontsize=11)
+        ax.set_ylabel("Average Wager (Weight)", fontsize=11)
+        if eval_type == "test":
+            title = "Average Wagers by Dataset (Test)"
+        elif eval_type == "ood":
+            title = "Average Wagers by Dataset (OOD)"
+        else:
+            title = "Average Wagers by Dataset (Test + OOD)"
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.set_xticks(x + width * (num_models - 1) / 2)
+        ax.set_xticklabels(dataset_names, rotation=20, ha="right")
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3, axis="y")
+        ax.set_ylim([0, 1.05])
+        plt.tight_layout()
+
+        save_path = self.checkpoint_dir / f"average_wagers_by_dataset_{eval_type}.png"
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        log.debug(f"Saved wagers plot ({eval_type}) to {save_path}")
+        if log_multi_dataset_plot is not None:
+            log_multi_dataset_plot(eval_type, save_path)
+        plt.close(fig)
 
     def plot_validation_wagers_by_dataset(
         self,
         val_wagers: np.ndarray,
         results: Dict[str, Any],
     ) -> None:
-        if "dataset_indices" not in results or self.checkpoint_dir is None:
+        if self.checkpoint_dir is None:
             return
 
-        dataset_indices = results["dataset_indices"]
-        num_datasets = len(self.datasets)
         num_models = val_wagers.shape[1]
         model_names = get_model_names_for_plot(self.metadata, self.models, num_models)
-        dataset_names = resolve_training_dataset_names(self.metadata, self.datasets)
+        dataset_name = resolve_training_dataset_name(self.metadata, self.dataset)
 
         fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        x = np.arange(num_datasets)
+        avg_wagers = [float(np.mean(val_wagers[:, i])) for i in range(num_models)]
+        x = np.arange(1)
         width = 0.8 / num_models
 
         for i in range(num_models):
-            avg_wagers = []
-            for dataset_idx in range(num_datasets):
-                mask = dataset_indices == dataset_idx
-                avg_wagers.append(float(np.mean(val_wagers[mask, i])) if np.any(mask) else 0.0)
-            ax.bar(x + i * width, avg_wagers, width, label=model_names[i], alpha=0.8)
+            ax.bar(x + i * width, [avg_wagers[i]], width, label=model_names[i], alpha=0.8)
 
         ax.set_xlabel("Dataset", fontsize=11)
         ax.set_ylabel("Average Wager (Weight)", fontsize=11)
         ax.set_title("Average Wagers by Dataset (Validation)", fontsize=12, fontweight="bold")
         ax.set_xticks(x + width * (num_models - 1) / 2)
-        ax.set_xticklabels(dataset_names, rotation=20, ha="right")
+        ax.set_xticklabels([dataset_name], rotation=20, ha="right")
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3, axis="y")
         ax.set_ylim([0, 1.05])
@@ -236,7 +337,7 @@ class WageringPlotter:
             ax.plot(time_steps, wagers_history[:, i], label=model_names[i], alpha=0.7, linewidth=1.5)
         ax.set_xlabel("Training Step", fontsize=11)
         ax.set_ylabel("Wager (Weight)", fontsize=11)
-        ax.set_title("Average Wagers Over Time (All Datasets)", fontsize=12, fontweight="bold")
+        ax.set_title("Average Wagers Over Time", fontsize=12, fontweight="bold")
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
         ax.set_ylim([0, 1.05])
@@ -254,86 +355,6 @@ class WageringPlotter:
 
                 self.log_wandb_plot({"wagers_plot/overall": wandb.Image(str(save_path))})
         plt.close()
-
-        if "dataset_indices" not in results:
-            return
-
-        dataset_indices = results["dataset_indices"]
-        num_datasets = len(self.datasets)
-        dataset_names_disp = resolve_training_dataset_names(self.metadata, self.datasets)
-
-        fig, axes = plt.subplots(num_datasets, 1, figsize=(10, 4 * num_datasets))
-        if num_datasets == 1:
-            axes = [axes]
-        for dataset_idx in range(num_datasets):
-            ax = axes[dataset_idx]
-            mask = dataset_indices == dataset_idx
-            if not np.any(mask):
-                continue
-            dataset_wagers = wagers_history[mask]
-            dataset_steps = np.arange(1, len(dataset_wagers) + 1)
-            for i in range(num_models):
-                ax.plot(
-                    dataset_steps,
-                    dataset_wagers[:, i],
-                    label=model_names[i],
-                    alpha=0.7,
-                    linewidth=1.5,
-                )
-            dataset_name = (
-                dataset_names_disp[dataset_idx]
-                if dataset_idx < len(dataset_names_disp)
-                else f"dataset_{dataset_idx}"
-            )
-            ax.set_xlabel("Training Step (within dataset)", fontsize=10)
-            ax.set_ylabel("Wager (Weight)", fontsize=10)
-            ax.set_title(f"Wagers Over Time - {dataset_name}", fontsize=11, fontweight="bold")
-            ax.legend(fontsize=8)
-            ax.grid(True, alpha=0.3)
-            ax.set_ylim([0, 1.05])
-        plt.tight_layout()
-
-        if self.checkpoint_dir:
-            grouped_save_path = self.checkpoint_dir / "wagers_over_time_by_dataset.png"
-            plt.savefig(grouped_save_path, dpi=150, bbox_inches="tight")
-            log.debug(f"Saved grouped wagers plot to {grouped_save_path}")
-            if self.log_wandb_plot is not None:
-                import wandb
-
-                self.log_wandb_plot({"wagers_plot/by_dataset": wandb.Image(str(grouped_save_path))})
-        plt.close()
-
-        if self.checkpoint_dir:
-            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-            x = np.arange(num_datasets)
-            width = 0.8 / num_models
-            for i in range(num_models):
-                avg_wagers = []
-                for dataset_idx in range(num_datasets):
-                    mask = dataset_indices == dataset_idx
-                    avg_wagers.append(
-                        float(np.mean(wagers_history[mask, i])) if np.any(mask) else 0.0
-                    )
-                ax.bar(x + i * width, avg_wagers, width, label=model_names[i], alpha=0.8)
-            ax.set_xlabel("Dataset", fontsize=11)
-            ax.set_ylabel("Average Wager (Weight)", fontsize=11)
-            ax.set_title("Average Wagers by Dataset", fontsize=12, fontweight="bold")
-            ax.set_xticks(x + width * (num_models - 1) / 2)
-            ax.set_xticklabels(dataset_names_disp, rotation=20, ha="right")
-            ax.legend(fontsize=9)
-            ax.grid(True, alpha=0.3, axis="y")
-            ax.set_ylim([0, 1.05])
-            plt.tight_layout()
-            avg_save_path = self.checkpoint_dir / "average_wagers_by_dataset.png"
-            plt.savefig(avg_save_path, dpi=150, bbox_inches="tight")
-            log.debug(f"Saved average wagers by dataset plot to {avg_save_path}")
-            if self.log_wandb_plot is not None:
-                import wandb
-
-                self.log_wandb_plot(
-                    {"wagers_plot/average_by_dataset": wandb.Image(str(avg_save_path))}
-                )
-            plt.close()
 
     def plot_val_wagers_vs_score_diff_for_epoch(
         self,

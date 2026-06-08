@@ -156,7 +156,6 @@ def load_models_from_config(
             - path_to_load_script: Path to load script (optional, for custom loading)
             - load_model_args: Arguments for model loading (optional)
             - load_tokenizer_args: Arguments for tokenizer loading (optional)
-            - instruct: Whether model is instruction-tuned (optional, default False)
             - generation_params: Generation parameters (optional)
         cache_kwargs: Optional cache kwargs for model loading
         share_identical_models: If True, identical model configs are loaded once
@@ -272,25 +271,20 @@ def load_models_from_config(
             )
             
             # Create WhiteboxModel
-            instruct = model_cfg.get("instruct", False)
             model = WhiteboxModel(
                 base_model,
                 tokenizer,
                 model_path,
                 model_cfg.get("type", "CausalLM"),
                 generation_params,
-                instruct=instruct,
             )
         else:
             # Use default loading
-            instruct = model_cfg.get("instruct", False)
-            
             model = WhiteboxModel.from_pretrained(
                 model_path,
                 generation_params=model_cfg.get("generation_params", {}),
                 device_map=resolved_device_map,
                 add_bos_token=model_cfg.get("add_bos_token", True),
-                instruct=instruct,
                 **cache_kwargs,
             )
         

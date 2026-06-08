@@ -12,7 +12,6 @@ reference implementation's use of per-expert scores without requiring task/clust
 from __future__ import annotations
 
 import sys
-import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -28,17 +27,24 @@ if str(SRC_PATH) not in sys.path:
 from transformers import AutoModel, AutoTokenizer
 
 from .base import WageringMethod
-from .utils import preprocess_pubmedqa_prompts_for_embedding
 from wagering.aggregation.linear_pooling import LinearPooling
-
-logger = logging.getLogger("wagering")
+from wagering.utils.checkpoint_loading import (
+    load_module_state,
+    load_optimizer_state,
+    load_scheduler_state,
+)
+from wagering.utils.encoder_batching import (
+    encode_questions_per_model_batch,
+    encode_transformer_batch,
+)
+from wagering.utils.tensor_helpers import row_normalize_nonnegative
 
 
 class RouterDCWagers(WageringMethod):
     """
     Encoder + expert embeddings + similarity routing (RouterDC-style).
 
-    Unlike `CentralizedWagers`, routing uses only the task prompt text, not LLM hidden states.
+    Unlike `StackedGeneralization`, routing uses only the task prompt text, not LLM hidden states.
     Unlike `RouteLLMBertWagers`, experts are represented by trainable embedding vectors and
     the training objective is sample–LLM contrastive (multi-positive) rather than a linear
     head + mixture cross-entropy (optional CE can be added later).
@@ -53,9 +59,7 @@ class RouterDCWagers(WageringMethod):
         # hidden states for every ensemble model.
         self.requires_hidden_states = False
 
-        self.encoder_model_name = str(
-            cfg.get("encoder_model_name", cfg.get("bert_model_name", "microsoft/mdeberta-v3-base"))
-        )
+        self.encoder_model_name = str(cfg.get("encoder_model_name", "microsoft/mdeberta-v3-base"))
         self.max_seq_length = int(cfg.get("max_seq_length", 512))
         self.learning_rate = float(cfg.get("learning_rate", 5e-5))
         self.temperature = float(cfg.get("temperature", 1.0))
@@ -66,21 +70,11 @@ class RouterDCWagers(WageringMethod):
         self.freeze_encoder = bool(cfg.get("freeze_encoder", False))
         # Default to keeping context (caller can disable it explicitly).
         self.pubmedqa_strip_context = bool(cfg.get("pubmedqa_strip_context", False))
-        self.similarity_function = str(cfg.get("similarity_function", "cos")).lower()
-        if self.similarity_function not in ("cos", "dot"):
-            raise ValueError("similarity_function must be 'cos' or 'dot'")
 
         self.top_k = int(cfg.get("top_k", 3))
         self.last_k = int(cfg.get("last_k", 3))
         self.min_pos_p = float(cfg.get("min_pos_p", 0.01))
         self.neg_mask_threshold = float(cfg.get("neg_mask_threshold", 0.5))
-        self.inactive_model_indices = {int(i) for i in cfg.get("inactive_model_indices", [])}
-        if any(i < 0 or i >= num_models for i in self.inactive_model_indices):
-            raise ValueError(
-                f"inactive_model_indices must be within [0, {num_models - 1}], got {sorted(self.inactive_model_indices)}"
-            )
-        if len(self.inactive_model_indices) >= num_models:
-            raise ValueError("router_dc requires at least one active model")
 
         self.lr_decay_factor = float(cfg.get("lr_decay_factor", 1.0))
         self.lr_decay_steps = int(cfg.get("lr_decay_steps", 100))
@@ -157,161 +151,37 @@ class RouterDCWagers(WageringMethod):
         self._cached_wagers: Optional[torch.Tensor] = None
         self._cached_router_logits: Optional[torch.Tensor] = None
 
-    def _active_model_mask(self) -> Optional[torch.Tensor]:
-        if not self.inactive_model_indices:
-            return None
-        mask = torch.ones((1, self.num_models), dtype=torch.float32, device=self.device)
-        inactive = sorted(self.inactive_model_indices)
-        mask[:, inactive] = 0.0
-        return mask
-
-    def _normalize_wagers_safe(self, wagers: torch.Tensor) -> torch.Tensor:
-        """Ensure finite, non-negative, row-normalized wagers (no fallback)."""
-        active_mask = self._active_model_mask()
-        if active_mask is not None:
-            wagers = wagers * active_mask.to(dtype=wagers.dtype)
-
-        if torch.any(~torch.isfinite(wagers)):
-            raise ValueError("router_dc produced non-finite wagers before normalization")
-        if torch.any(wagers < 0):
-            raise ValueError("router_dc produced negative wagers before normalization")
-
-        row_sums = wagers.sum(dim=1, keepdim=True)
-        if torch.any(~torch.isfinite(row_sums)) or torch.any(row_sums <= 1e-12):
-            raise ValueError("router_dc produced invalid wager row sums during normalization")
-        normalized = wagers / row_sums
-        return normalized
-
     def _encode_questions_batch(self, questions: List[str]) -> torch.Tensor:
-        if not hasattr(self, "_logged_first_encode_batch"):
-            setattr(self, "_logged_first_encode_batch", False)
-        processed = preprocess_pubmedqa_prompts_for_embedding(
+        return encode_transformer_batch(
             questions,
-            # Do not regex-strip content here. When pubmedqa_strip_context is enabled for this method,
-            # the trainer/evaluator is responsible for passing the dataset's prompt_without_context
-            # variant verbatim (even if it contains "Context:" text).
+            tokenizer=self.tokenizer,
+            model=self.encoder,
+            device=self.device,
+            max_seq_length=self.max_seq_length,
+            training=self._training,
+            freeze_backbone=self.freeze_encoder,
+            micro_batch_size=self.micro_batch_size,
             strip_context=False,
         )
-        if not getattr(self, "_logged_first_encode_batch", False):
-            try:
-                if torch.cuda.is_available() and self.device.type == "cuda":
-                    dev = torch.cuda.current_device()
-                    alloc = float(torch.cuda.memory_allocated(dev)) / (1024**3)
-                    resv = float(torch.cuda.memory_reserved(dev)) / (1024**3)
-                    logger.info(
-                        "[router_dc] encode_batch: n_prompts=%d max_seq_length=%d device=%s cuda_dev=%s alloc=%.2fGiB reserved=%.2fGiB",
-                        len(processed),
-                        int(self.max_seq_length),
-                        str(self.device),
-                        str(dev),
-                        alloc,
-                        resv,
-                    )
-                else:
-                    logger.info(
-                        "[router_dc] encode_batch: n_prompts=%d max_seq_length=%d device=%s",
-                        len(processed),
-                        int(self.max_seq_length),
-                        str(self.device),
-                    )
-            except Exception:
-                pass
-        mbs = int(self.micro_batch_size) if int(self.micro_batch_size) > 0 else len(processed)
-        chunks: List[torch.Tensor] = []
-        for start in range(0, len(processed), mbs):
-            end = min(start + mbs, len(processed))
-            inputs = self.tokenizer(
-                processed[start:end],
-                return_tensors="pt",
-                truncation=True,
-                max_length=self.max_seq_length,
-                padding=True,
-            ).to(self.device)
-            if not getattr(self, "_logged_first_encode_batch", False):
-                try:
-                    if torch.cuda.is_available() and self.device.type == "cuda":
-                        dev = torch.cuda.current_device()
-                        alloc = float(torch.cuda.memory_allocated(dev)) / (1024**3)
-                        resv = float(torch.cuda.memory_reserved(dev)) / (1024**3)
-                        input_shape = tuple(getattr(inputs, "input_ids", torch.empty(0)).shape)
-                        logger.info(
-                            "[router_dc] after_tokenize_to_device: input_ids_shape=%s alloc=%.2fGiB reserved=%.2fGiB micro_batch_size=%d",
-                            str(input_shape),
-                            alloc,
-                            resv,
-                            int(mbs),
-                        )
-                except Exception:
-                    pass
-                setattr(self, "_logged_first_encode_batch", True)
-
-            grad_enc = self._training and not self.freeze_encoder
-            with torch.set_grad_enabled(grad_enc):
-                outputs = self.encoder(**inputs)
-            chunks.append(outputs.last_hidden_state[:, 0, :])
-
-        if not chunks:
-            return torch.empty((0, int(self.encoder.config.hidden_size)), device=self.device, dtype=torch.float32)
-        return torch.cat(chunks, dim=0)
 
     def _encode_questions_per_model_batch(self, questions_per_model: List[List[str]]) -> torch.Tensor:
-        """
-        Encode per-model prompt variants, then concatenate embeddings in model order.
-
-        questions_per_model: list length M, each element is a list of B strings.
-        returns: [B, M*H] (or [B, H] if concat_prompt_embeddings is False).
-        """
-        if not isinstance(questions_per_model, list) or len(questions_per_model) != self.num_models:
-            raise ValueError(
-                "router_dc expects questions_per_model as a list of length num_models "
-                f"(expected {self.num_models})."
-            )
-        batch_size = len(questions_per_model[0]) if self.num_models > 0 else 0
-        for mi, prompts in enumerate(questions_per_model):
-            if len(prompts) != batch_size:
-                raise ValueError(
-                    "router_dc questions_per_model batch mismatch: "
-                    f"model_index={mi}, len={len(prompts)}, expected={batch_size}"
-                )
-
-        if not self.concat_prompt_embeddings:
-            # Use model 0 prompts as the single router prompt stream.
-            return self._encode_questions_batch(list(questions_per_model[0]))
-
-        # Deduplicate by prompt text to save encoder calls.
-        flat_prompts: List[str] = []
-        for mi in range(self.num_models):
-            flat_prompts.extend([str(p) for p in questions_per_model[mi]])
-        unique_prompts: List[str] = []
-        index_by_prompt: Dict[str, int] = {}
-        for p in flat_prompts:
-            if p in index_by_prompt:
-                continue
-            index_by_prompt[p] = len(unique_prompts)
-            unique_prompts.append(p)
-
-        unique_emb = self._encode_questions_batch(unique_prompts)  # [U, H]
-        # Reconstruct per-model embeddings and concatenate in model order.
-        per_model_emb: List[torch.Tensor] = []
-        for mi in range(self.num_models):
-            idx = torch.as_tensor(
-                [index_by_prompt[str(p)] for p in questions_per_model[mi]],
-                device=self.device,
-                dtype=torch.long,
-            )
-            per_model_emb.append(unique_emb.index_select(0, idx))  # [B, H]
-        return torch.cat(per_model_emb, dim=1)  # [B, M*H]
+        return encode_questions_per_model_batch(
+            questions_per_model,
+            num_models=self.num_models,
+            device=self.device,
+            concat_prompt_embeddings=self.concat_prompt_embeddings,
+            encode_batch=self._encode_questions_batch,
+            method_name="router_dc",
+        )
 
     def _compute_similarity(self, query_emb: torch.Tensor) -> torch.Tensor:
-        """query_emb: [B, H], returns logits [B, M] before temperature scaling."""
+        """query_emb: [B, H], returns cosine-similarity logits [B, M] before temperature scaling."""
         expert_w = self.expert_embeddings.weight  # [M, H]
         if query_emb.dtype != expert_w.dtype:
             query_emb = query_emb.to(dtype=expert_w.dtype)
-        if self.similarity_function == "cos":
-            q = F.normalize(query_emb, dim=-1)
-            e = F.normalize(expert_w, dim=-1)
-            return q @ e.T
-        return query_emb @ expert_w.T
+        q = F.normalize(query_emb, dim=-1)
+        e = F.normalize(expert_w, dim=-1)
+        return q @ e.T
 
     def compute_wagers(
         self,
@@ -343,7 +213,7 @@ class RouterDCWagers(WageringMethod):
             logits = self._compute_similarity(query_emb)
             logits = logits / self.temperature
             wagers = torch.softmax(logits, dim=1)
-            wagers = self._normalize_wagers_safe(wagers)
+            wagers = row_normalize_nonnegative(wagers)
 
         if self._training:
             self._cached_wagers = wagers
@@ -364,11 +234,6 @@ class RouterDCWagers(WageringMethod):
         device = router_logits.device
         router_logits = torch.nan_to_num(router_logits, nan=0.0, posinf=50.0, neginf=-50.0)
         p_gold = torch.nan_to_num(p_gold, nan=0.0, posinf=1.0, neginf=0.0).clamp(min=0.0, max=1.0)
-
-        if self.inactive_model_indices:
-            inactive = sorted(self.inactive_model_indices)
-            p_gold[:, inactive] = -1.0
-            router_logits[:, inactive] = float("-inf")
 
         k_pos = min(self.top_k, M)
         k_neg = min(self.last_k, M)
@@ -569,12 +434,10 @@ class RouterDCWagers(WageringMethod):
                 "weight_decay": self.weight_decay,
                 "freeze_encoder": self.freeze_encoder,
                 "pubmedqa_strip_context": self.pubmedqa_strip_context,
-                "similarity_function": self.similarity_function,
                 "top_k": self.top_k,
                 "last_k": self.last_k,
                 "min_pos_p": self.min_pos_p,
                 "neg_mask_threshold": self.neg_mask_threshold,
-                "inactive_model_indices": sorted(self.inactive_model_indices),
                 "lr_decay_factor": self.lr_decay_factor,
                 "lr_decay_steps": self.lr_decay_steps,
                 "device": self.device_str,
@@ -582,25 +445,7 @@ class RouterDCWagers(WageringMethod):
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        if "encoder_state_dict" in state_dict:
-            self.encoder.load_state_dict(state_dict["encoder_state_dict"])
-        if "expert_embeddings_state_dict" in state_dict:
-            self.expert_embeddings.load_state_dict(state_dict["expert_embeddings_state_dict"])
-        if "optimizer_state_dict" in state_dict:
-            try:
-                self.optimizer.load_state_dict(state_dict["optimizer_state_dict"])
-            except (ValueError, KeyError) as e:
-                import logging
-
-                logging.getLogger("wagering").warning(
-                    "Could not load optimizer state dict: %s. Using fresh optimizer.", e
-                )
-        if "scheduler_state_dict" in state_dict:
-            try:
-                self.scheduler.load_state_dict(state_dict["scheduler_state_dict"])
-            except (ValueError, KeyError) as e:
-                import logging
-
-                logging.getLogger("wagering").warning(
-                    "Could not load scheduler state dict: %s. Using fresh scheduler.", e
-                )
+        load_module_state(self.encoder, state_dict.get("encoder_state_dict"))
+        load_module_state(self.expert_embeddings, state_dict.get("expert_embeddings_state_dict"))
+        load_optimizer_state(self.optimizer, state_dict.get("optimizer_state_dict"))
+        load_scheduler_state(self.scheduler, state_dict.get("scheduler_state_dict"))

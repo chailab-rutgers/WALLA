@@ -32,8 +32,16 @@ os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 from transformers import AutoModel, AutoTokenizer
 
 from .base import WageringMethod
-from .utils import preprocess_pubmedqa_prompts_for_embedding
 from wagering.aggregation.linear_pooling import LinearPooling
+from wagering.utils.checkpoint_loading import (
+    load_module_state,
+    load_optimizer_state,
+    load_scheduler_state,
+)
+from wagering.utils.encoder_batching import (
+    encode_questions_per_model_batch,
+    encode_transformer_batch,
+)
 
 
 class NIRTRouterWagers(WageringMethod):
@@ -64,9 +72,7 @@ class NIRTRouterWagers(WageringMethod):
 
         self.requires_hidden_states = False
 
-        self.encoder_model_name = str(
-            cfg.get("encoder_model_name", cfg.get("bert_model_name", "bert-base-uncased"))
-        )
+        self.encoder_model_name = str(cfg.get("encoder_model_name", "bert-base-uncased"))
         self.max_seq_length = int(cfg.get("max_seq_length", 512))
         self.learning_rate = float(cfg.get("learning_rate", 5e-5))
         self.temperature = float(cfg.get("temperature", 1.0))
@@ -219,69 +225,27 @@ class NIRTRouterWagers(WageringMethod):
         return kv
 
     def _encode_questions_batch(self, questions: List[str]) -> torch.Tensor:
-        processed = preprocess_pubmedqa_prompts_for_embedding(
+        return encode_transformer_batch(
             questions,
-            # Do not regex-strip content here. When pubmedqa_strip_context is enabled for this method,
-            # the trainer/evaluator is responsible for passing the dataset's prompt_without_context
-            # variant verbatim (even if it contains "Context:" text).
+            tokenizer=self.tokenizer,
+            model=self.encoder,
+            device=self.device,
+            max_seq_length=self.max_seq_length,
+            training=self._training,
+            freeze_backbone=self.freeze_encoder,
+            output_dtype=self.k_difficulty.weight.dtype,
             strip_context=False,
         )
-        inputs = self.tokenizer(
-            processed,
-            return_tensors="pt",
-            truncation=True,
-            max_length=self.max_seq_length,
-            padding=True,
-        ).to(self.device)
-
-        grad_enc = self._training and not self.freeze_encoder
-        with torch.set_grad_enabled(grad_enc):
-            outputs = self.encoder(**inputs)
-
-        if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
-            pooled = outputs.pooler_output
-        else:
-            pooled = outputs.last_hidden_state[:, 0, :]
-        return pooled.to(dtype=self.k_difficulty.weight.dtype)
 
     def _encode_questions_per_model_batch(self, questions_per_model: List[List[str]]) -> torch.Tensor:
-        if not isinstance(questions_per_model, list) or len(questions_per_model) != self.num_models:
-            raise ValueError(
-                "nirt_router expects questions_per_model as a list of length num_models "
-                f"(expected {self.num_models})."
-            )
-        batch_size = len(questions_per_model[0]) if self.num_models > 0 else 0
-        for mi, prompts in enumerate(questions_per_model):
-            if len(prompts) != batch_size:
-                raise ValueError(
-                    "nirt_router questions_per_model batch mismatch: "
-                    f"model_index={mi}, len={len(prompts)}, expected={batch_size}"
-                )
-
-        if not self.concat_prompt_embeddings:
-            return self._encode_questions_batch(list(questions_per_model[0]))
-
-        flat_prompts: List[str] = []
-        for mi in range(self.num_models):
-            flat_prompts.extend([str(p) for p in questions_per_model[mi]])
-        unique_prompts: List[str] = []
-        index_by_prompt: Dict[str, int] = {}
-        for p in flat_prompts:
-            if p in index_by_prompt:
-                continue
-            index_by_prompt[p] = len(unique_prompts)
-            unique_prompts.append(p)
-
-        unique_emb = self._encode_questions_batch(unique_prompts)  # [U, H]
-        per_model_emb: List[torch.Tensor] = []
-        for mi in range(self.num_models):
-            idx = torch.as_tensor(
-                [index_by_prompt[str(p)] for p in questions_per_model[mi]],
-                device=self.device,
-                dtype=torch.long,
-            )
-            per_model_emb.append(unique_emb.index_select(0, idx))
-        return torch.cat(per_model_emb, dim=1).to(dtype=self.k_difficulty.weight.dtype)
+        return encode_questions_per_model_batch(
+            questions_per_model,
+            num_models=self.num_models,
+            device=self.device,
+            concat_prompt_embeddings=self.concat_prompt_embeddings,
+            encode_batch=self._encode_questions_batch,
+            method_name="nirt_router",
+        )
 
     def _compute_prob_correct(self, pooled: torch.Tensor, knowledge_vectors: torch.Tensor) -> torch.Tensor:
         batch_size = pooled.shape[0]
@@ -536,35 +500,12 @@ class NIRTRouterWagers(WageringMethod):
         return state
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        if "encoder_state_dict" in state_dict:
-            self.encoder.load_state_dict(state_dict["encoder_state_dict"])
-        if "model_embeddings_state_dict" in state_dict:
-            self.model_embeddings.load_state_dict(state_dict["model_embeddings_state_dict"])
-        if "model_proj_state_dict" in state_dict:
-            self.model_proj.load_state_dict(state_dict["model_proj_state_dict"])
-        if "k_difficulty_state_dict" in state_dict:
-            self.k_difficulty.load_state_dict(state_dict["k_difficulty_state_dict"])
-        if "e_difficulty_state_dict" in state_dict:
-            self.e_difficulty.load_state_dict(state_dict["e_difficulty_state_dict"])
-        if "prednet_full1_state_dict" in state_dict:
-            self.prednet_full1.load_state_dict(state_dict["prednet_full1_state_dict"])
-        if "prednet_full3_state_dict" in state_dict:
-            self.prednet_full3.load_state_dict(state_dict["prednet_full3_state_dict"])
-        if "optimizer_state_dict" in state_dict:
-            try:
-                self.optimizer.load_state_dict(state_dict["optimizer_state_dict"])
-            except (ValueError, KeyError) as e:
-                import logging
-
-                logging.getLogger("wagering").warning(
-                    "Could not load optimizer state dict: %s. Using fresh optimizer.", e
-                )
-        if "scheduler_state_dict" in state_dict:
-            try:
-                self.scheduler.load_state_dict(state_dict["scheduler_state_dict"])
-            except (ValueError, KeyError) as e:
-                import logging
-
-                logging.getLogger("wagering").warning(
-                    "Could not load scheduler state dict: %s. Using fresh scheduler.", e
-                )
+        load_module_state(self.encoder, state_dict.get("encoder_state_dict"))
+        load_module_state(self.model_embeddings, state_dict.get("model_embeddings_state_dict"))
+        load_module_state(self.model_proj, state_dict.get("model_proj_state_dict"))
+        load_module_state(self.k_difficulty, state_dict.get("k_difficulty_state_dict"))
+        load_module_state(self.e_difficulty, state_dict.get("e_difficulty_state_dict"))
+        load_module_state(self.prednet_full1, state_dict.get("prednet_full1_state_dict"))
+        load_module_state(self.prednet_full3, state_dict.get("prednet_full3_state_dict"))
+        load_optimizer_state(self.optimizer, state_dict.get("optimizer_state_dict"))
+        load_scheduler_state(self.scheduler, state_dict.get("scheduler_state_dict"))

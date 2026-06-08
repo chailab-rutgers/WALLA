@@ -30,16 +30,15 @@ from wagering.utils.checkpoint_utils import (
     generate_calibration_dir,
     generate_per_model_calibration_dir,
 )
-from wagering.utils import load_datasets_from_config, load_models_from_config
-from wagering.utils.dataset_utils import calibration_dataset_configs_include_pubmedqa
-from wagering.utils.multi_llm_ensemble import (
+from wagering.utils import load_dataset_from_config, load_models_from_config
+from wagering.utils.dataset_utils import calibration_dataset_config_is_pubmedqa
+from wagering.utils.cache_manager import (
+    collect_stacked_model_artifacts,
+    load_cached_model_artifacts,
+)
+from wagering.utils.prompt_manager import (
     assign_pubmedqa_context_models,
-    collect_option_logits_and_hidden_states_for_model,
-    extract_hidden_state_features,
     get_model_prompt_variant,
-    get_cached_logits_and_hidden_states_for_model,
-    set_cached_logits_and_hidden_states_for_model,
-    _get_mixed_context_dataset_type,
 )
 
 log = logging.getLogger("wagering")
@@ -58,8 +57,8 @@ def get_calibration_config(args: Dict[str, Any]) -> Dict[str, Any]:
     calibration_config = args.get("calibration")
     if not isinstance(calibration_config, dict):
         raise ValueError("calibrated=true requires a calibration config via _include_calibration or calibration")
-    if "datasets" not in calibration_config or not calibration_config["datasets"]:
-        raise ValueError("Calibration config must define at least one dataset")
+    if "dataset" not in calibration_config or not calibration_config["dataset"]:
+        raise ValueError("Calibration config must define a dataset")
     return calibration_config
 
 
@@ -122,16 +121,16 @@ def resolve_calibration_artifact_dir(args: Dict[str, Any]) -> Optional[Path]:
     base_dir = Path(
         calibration_config.get(
             "checkpoint_base_dir",
-            "/common/users/yl2310/MultiLLMs/calibration_checkpoints",
+            "/common/users/yl2310/WALLA/calibration_checkpoints",
         )
     )
     # PubMedQA: single combined artifact keyed by full ensemble. Non-PubMedQA: per-model
     # artifacts live under base_dir/per_model/ (see generate_per_model_calibration_dir).
-    if calibration_dataset_configs_include_pubmedqa(calibration_config["datasets"]):
+    if calibration_dataset_config_is_pubmedqa(calibration_config["dataset"]):
         return generate_calibration_dir(
             base_dir=base_dir,
             models=args["models"],
-            datasets=calibration_config["datasets"],
+            dataset=calibration_config["dataset"],
             calibration_config=calibration_config,
             create_hash=True,
         )
@@ -224,8 +223,6 @@ class AdaptiveTemperatureCalibrator(nn.Module):
                     "Without canonical_unique_heads, slot_model_paths must match heads length"
                 )
 
-        # Back-compat alias: older code reads .model_paths
-        self.model_paths = self.head_model_paths
         self.config = dict(config)
         self.device_name = str(self.config.get("device", "cpu"))
         self.device = torch.device(self.device_name)
@@ -239,7 +236,7 @@ class AdaptiveTemperatureCalibrator(nn.Module):
         self.max_grad_norm = float(self.config.get("max_grad_norm", 1.0))
         self.shuffle_seed = int(self.config.get("shuffle_seed", 42))
 
-        hidden_layers = self.config.get("head_hidden_layers", self.config.get("hidden_layers", []))
+        hidden_layers = list(self.config.get("head_hidden_layers", []))
         dropout = float(self.config.get("dropout", 0.0))
         min_temperature = float(self.config.get("min_temperature", 0.05))
         max_temperature = self.config.get("max_temperature", 10.0)
@@ -591,7 +588,7 @@ class AdaptiveTemperatureCalibrator(nn.Module):
 
 class ContextConditionedAdaptiveTemperatureCalibrator(AdaptiveTemperatureCalibrator):
     """
-    PubMedQA/RACE mixed-context variant.
+    PubMedQA mixed-context variant.
 
     Trains and applies two heads per model:
     - head_role=0: model is the assigned "with_context" expert for this example
@@ -618,7 +615,7 @@ class ContextConditionedAdaptiveTemperatureCalibrator(AdaptiveTemperatureCalibra
         )
 
         # Replace heads with 2x per model.
-        hidden_layers = self.config.get("head_hidden_layers", self.config.get("hidden_layers", []))
+        hidden_layers = list(self.config.get("head_hidden_layers", []))
         dropout = float(self.config.get("dropout", 0.0))
         min_temperature = float(self.config.get("min_temperature", 0.05))
         max_temperature = self.config.get("max_temperature", 10.0)
@@ -765,11 +762,11 @@ class ContextConditionedAdaptiveTemperatureCalibrator(AdaptiveTemperatureCalibra
         return calibrated_logits
 
 
-def _prepare_models_for_datasets(
+def _prepare_models_for_dataset(
     model_cfgs: Sequence[Dict[str, Any]],
-    datasets: Sequence[Dataset],
+    dataset: Dataset,
     option_tokens: Sequence[str],
-    cache_path: Optional[str],
+    cache_path: str,
     require_hidden_states: bool,
 ) -> Tuple[List[WhiteboxModel | str], List[str]]:
     """Load only the models that are missing required cached artifacts."""
@@ -779,21 +776,17 @@ def _prepare_models_for_datasets(
     for idx, model_cfg in enumerate(model_cfgs):
         model_path = model_cfg["path"]
         model_names.append(model_path.replace("/", "_"))
-        dataset_cache_ok = True
-        for dataset in datasets:
-            prompt_variant = get_model_prompt_variant(dataset, model_index=idx)
-            cached_logits, cached_hidden_states, _ = get_cached_logits_and_hidden_states_for_model(
-                model_path,
-                dataset,
-                list(option_tokens),
-                prompt_variant=prompt_variant,
-                model_index=idx,
-                hidden_state_layers=[-1],
-            )
-            if cached_logits is None or (require_hidden_states and cached_hidden_states is None):
-                dataset_cache_ok = False
-                break
-        if not dataset_cache_ok:
+        prompt_variant = get_model_prompt_variant(dataset, model_index=idx)
+        cached = load_cached_model_artifacts(
+            model_path,
+            dataset,
+            list(option_tokens),
+            prompt_variant=prompt_variant,
+            model_index=idx,
+        )
+        if cached is None or cached.logits is None or (
+            require_hidden_states and cached.hidden_states is None
+        ):
             cache_miss_indices.append(idx)
 
     if not cache_miss_indices:
@@ -802,7 +795,7 @@ def _prepare_models_for_datasets(
     missing_cfgs = [model_cfgs[idx] for idx in cache_miss_indices]
     missing_models, missing_model_names = load_models_from_config(
         missing_cfgs,
-        cache_kwargs={"cache_dir": cache_path} if cache_path else {},
+        cache_kwargs={"cache_dir": cache_path},
     )
     missing_name_map = {idx: name for idx, name in zip(cache_miss_indices, missing_model_names)}
     missing_iter = iter(missing_models)
@@ -820,120 +813,31 @@ def _prepare_models_for_datasets(
 
 def _collect_calibration_arrays(
     models: Sequence[WhiteboxModel | str],
-    datasets: Sequence[Dataset],
+    dataset: Dataset,
     option_tokens: Sequence[str],
-    balance_datasets: bool,
-    shuffle_seed: int,
 ) -> Tuple[np.ndarray, List[np.ndarray], np.ndarray, Optional[np.ndarray]]:
-    """Load or collect cached logits and hidden states for calibration datasets."""
-    per_dataset_logits: List[np.ndarray] = []
-    per_dataset_hidden_states: List[List[np.ndarray]] = []
-    per_dataset_labels: List[np.ndarray] = []
-    per_dataset_context_assignments: List[np.ndarray] = []
-    saw_mixed_context = False
-
-    for dataset in datasets:
-        dataset_type = _get_mixed_context_dataset_type(dataset)
-        if dataset_type is not None:
-            saw_mixed_context = True
-            raw = getattr(dataset, f"{dataset_type}_context_assignment_by_example", None)
-            if not isinstance(raw, list) or len(raw) != len(dataset.x):
-                raise RuntimeError(
-                    "Mixed-context calibration dataset missing per-example assignments. "
-                    "Call assign_pubmedqa_context_models before calibration cache checks/collection."
-                )
-            per_dataset_context_assignments.append(np.asarray(raw, dtype=np.int64))
-        else:
-            per_dataset_context_assignments.append(np.full((len(dataset.x),), -1, dtype=np.int64))
-
-        dataset_model_logits: List[np.ndarray] = []
-        dataset_model_hidden_states: List[np.ndarray] = []
-        dataset_labels: Optional[np.ndarray] = None
-
-        for model_idx, model in enumerate(models):
-            model_path = model if isinstance(model, str) else model.model_path
-            prompt_variant = get_model_prompt_variant(dataset, model_index=model_idx)
-            cached_logits, cached_hidden_states, cached_labels = get_cached_logits_and_hidden_states_for_model(
-                model_path,
-                dataset,
-                list(option_tokens),
-                prompt_variant=prompt_variant,
-                model_index=model_idx,
-                hidden_state_layers=[-1],
-            )
-
-            if cached_logits is None or cached_hidden_states is None:
-                if isinstance(model, str):
-                    raise RuntimeError(
-                        f"Cache miss for model path {model}. A loaded model instance is required to collect calibration caches."
-                    )
-                model_logits, model_hidden_states_all_layers, model_labels = collect_option_logits_and_hidden_states_for_model(
-                    model,
-                    dataset,
-                    list(option_tokens),
-                    model_identifier=str(model_path),
-                    model_index=model_idx,
-                    hidden_state_layers=[-1],
-                )
-                set_cached_logits_and_hidden_states_for_model(
-                    model,
-                    dataset,
-                    list(option_tokens),
-                    model_logits,
-                    model_hidden_states_all_layers,
-                    model_labels,
-                    prompt_variant=prompt_variant,
-                    model_index=model_idx,
-                    hidden_state_layers=[-1],
-                )
-                model_hidden_states = extract_hidden_state_features(model_hidden_states_all_layers, [-1])
-                if model_hidden_states is None:
-                    raise RuntimeError("Failed to extract hidden states for calibration")
-            else:
-                model_logits = cached_logits
-                model_hidden_states = cached_hidden_states
-                model_labels = cached_labels
-
-            model_logits = np.asarray(model_logits, dtype=np.float32)
-            model_hidden_states = np.asarray(model_hidden_states, dtype=np.float32)
-            model_labels = np.asarray(model_labels, dtype=np.int64)
-            if dataset_labels is None:
-                dataset_labels = model_labels
-            elif not np.array_equal(dataset_labels, model_labels):
-                raise RuntimeError("Calibration labels must match across models for the same dataset")
-
-            dataset_model_logits.append(model_logits)
-            dataset_model_hidden_states.append(model_hidden_states)
-
-        if dataset_labels is None:
-            raise RuntimeError("Calibration dataset produced no labels")
-
-        per_dataset_logits.append(np.stack(dataset_model_logits, axis=0))
-        per_dataset_hidden_states.append(dataset_model_hidden_states)
-        per_dataset_labels.append(dataset_labels)
-
-    if balance_datasets and per_dataset_labels:
-        rng = np.random.RandomState(shuffle_seed)
-        min_size = min(label_array.shape[0] for label_array in per_dataset_labels)
-        for dataset_idx, label_array in enumerate(per_dataset_labels):
-            if label_array.shape[0] == min_size:
-                indices = np.arange(min_size, dtype=np.int64)
-            else:
-                indices = np.sort(rng.choice(label_array.shape[0], size=min_size, replace=False))
-            per_dataset_logits[dataset_idx] = per_dataset_logits[dataset_idx][:, indices, :]
-            per_dataset_hidden_states[dataset_idx] = [hidden_state[indices] for hidden_state in per_dataset_hidden_states[dataset_idx]]
-            per_dataset_labels[dataset_idx] = label_array[indices]
-
-    stacked_logits = np.concatenate(per_dataset_logits, axis=1)
-    hidden_states_by_model = [
-        np.concatenate([per_dataset_hidden_states[dataset_idx][model_idx] for dataset_idx in range(len(per_dataset_hidden_states))], axis=0)
-        for model_idx in range(len(models))
-    ]
-    labels = np.concatenate(per_dataset_labels, axis=0)
-    context_assignments = (
-        np.concatenate(per_dataset_context_assignments, axis=0) if saw_mixed_context else None
+    """Load or collect cached logits and hidden states for the calibration dataset."""
+    artifacts = collect_stacked_model_artifacts(
+        models,
+        dataset,
+        option_tokens,
+        collect_hidden_states=True,
+        require_labels_consistency=True,
+        mixed_context_error_message=(
+            "Mixed-context calibration dataset missing per-example assignments. "
+            "Call assign_pubmedqa_context_models before calibration cache checks/collection."
+        ),
     )
-    return stacked_logits, hidden_states_by_model, labels, context_assignments
+    if artifacts.labels is None:
+        raise RuntimeError("Calibration dataset produced no labels")
+    if artifacts.hidden_states_per_model is None:
+        raise RuntimeError("Failed to collect hidden states for calibration")
+    return (
+        artifacts.logits,
+        artifacts.hidden_states_per_model,
+        artifacts.labels,
+        artifacts.context_assignments,
+    )
 
 
 def _fit_or_load_per_model_calibrators(
@@ -957,7 +861,7 @@ def _fit_or_load_per_model_calibrators(
         p: generate_per_model_calibration_dir(
             base_dir=base_root,
             model_path=p,
-            datasets=calibration_config["datasets"],
+            dataset=calibration_config["dataset"],
             calibration_config=calibration_config,
         )
         for p in unique_paths
@@ -982,12 +886,12 @@ def _fit_or_load_per_model_calibrators(
             )
             return calibrator, str(base_root / "per_model"), False
 
-    datasets, dataset_names = load_datasets_from_config(
-        calibration_config["datasets"],
+    calibration_dataset, dataset_name = load_dataset_from_config(
+        calibration_config["dataset"],
         split="train",
         random_seed=dataset_split_seed,
     )
-    log.info("Loaded %d calibration datasets: %s", len(datasets), dataset_names)
+    log.info("Loaded calibration dataset: %s", dataset_name)
 
     any_fitted = False
     total_models = len(unique_paths)
@@ -1008,19 +912,17 @@ def _fit_or_load_per_model_calibrators(
             total_models,
             p,
         )
-        models, _ = _prepare_models_for_datasets(
+        models, _ = _prepare_models_for_dataset(
             model_cfgs=[{"path": p}],
-            datasets=datasets,
+            dataset=calibration_dataset,
             option_tokens=option_tokens,
-            cache_path=args.get("cache_path"),
+            cache_path=args["cache_path"],
             require_hidden_states=True,
         )
         all_logits, all_hidden, labels, _ = _collect_calibration_arrays(
             models=models,
-            datasets=datasets,
+            dataset=calibration_dataset,
             option_tokens=option_tokens,
-            balance_datasets=bool(calibration_config.get("balance_datasets", True)),
-            shuffle_seed=int(calibration_config.get("shuffle_seed", 42)),
         )
         dim = all_hidden[0].shape[1]
         one_calibrator = AdaptiveTemperatureCalibrator(
@@ -1061,11 +963,11 @@ def fit_or_load_logit_calibrator(
     apply_to_model_indices = _coerce_apply_to_model_indices(
         calibration_config, num_models=len(args.get("models") or [])
     )
-    include_pubmedqa = calibration_dataset_configs_include_pubmedqa(calibration_config["datasets"])
+    include_pubmedqa = calibration_dataset_config_is_pubmedqa(calibration_config["dataset"])
     base_root = Path(calibration_path) if calibration_path is not None else Path(
         calibration_config.get(
             "checkpoint_base_dir",
-            "/common/users/yl2310/MultiLLMs/calibration_checkpoints",
+            "/common/users/yl2310/WALLA/calibration_checkpoints",
         )
     )
 
@@ -1080,7 +982,7 @@ def fit_or_load_logit_calibrator(
     artifact_dir = Path(calibration_path) if calibration_path is not None else generate_calibration_dir(
         base_dir=base_root,
         models=args["models"],
-        datasets=calibration_config["datasets"],
+        dataset=calibration_config["dataset"],
         calibration_config=calibration_config,
         create_hash=True,
     )
@@ -1091,7 +993,6 @@ def fit_or_load_logit_calibrator(
     artifact_file = artifact_dir / AdaptiveTemperatureCalibrator.artifact_name
     conditioned_file = artifact_dir / ContextConditionedAdaptiveTemperatureCalibrator.artifact_name
     if (artifact_file.exists() or conditioned_file.exists()) and reuse_existing and not force_refit:
-        # Backwards compatible: prefer conditioned artifact if requested & present.
         if conditioned_requested and conditioned_file.exists():
             calibrator = ContextConditionedAdaptiveTemperatureCalibrator.load_pretrained(
                 artifact_dir,
@@ -1122,23 +1023,22 @@ def fit_or_load_logit_calibrator(
             return calibrator, str(artifact_dir), False
 
     dataset_split_seed = int(args.get("dataset_split_seed", 42))
-    datasets, dataset_names = load_datasets_from_config(
-        calibration_config["datasets"],
+    calibration_dataset, dataset_name = load_dataset_from_config(
+        calibration_config["dataset"],
         split="train",
         random_seed=dataset_split_seed,
     )
-    log.info("Loaded %d calibration datasets: %s", len(datasets), dataset_names)
+    log.info("Loaded calibration dataset: %s", dataset_name)
 
     pubmedqa_context_seed = dataset_split_seed
     pubmedqa_assignments = assign_pubmedqa_context_models(
-        datasets,
+        [calibration_dataset],
         [model_cfg["path"] for model_cfg in args["models"]],
         random_seed=pubmedqa_context_seed,
     )
     for dataset_idx, assignment_info in pubmedqa_assignments.items():
-        dataset_name = dataset_names[dataset_idx] if dataset_idx < len(dataset_names) else f"dataset_{dataset_idx}"
         assignment_hash = assignment_info.get("assignment_hash", "unknown")
-        num_examples = assignment_info.get("num_examples", len(datasets[dataset_idx].x))
+        num_examples = assignment_info.get("num_examples", len(calibration_dataset.x))
         routing_seed = assignment_info.get("routing_seed", pubmedqa_context_seed)
         model_context_counts = assignment_info.get("model_context_counts", [])
         log.info(
@@ -1159,20 +1059,18 @@ def fit_or_load_logit_calibrator(
                     int(context_count),
                 )
 
-    models, _ = _prepare_models_for_datasets(
+    models, _ = _prepare_models_for_dataset(
         model_cfgs=args["models"],
-        datasets=datasets,
+        dataset=calibration_dataset,
         option_tokens=args.get("option_tokens", ["A", "B", "C", "D"]),
-        cache_path=args.get("cache_path"),
+        cache_path=args["cache_path"],
         require_hidden_states=True,
     )
 
     all_model_logits, all_hidden_states, labels, context_assignments = _collect_calibration_arrays(
         models=models,
-        datasets=datasets,
+        dataset=calibration_dataset,
         option_tokens=args.get("option_tokens", ["A", "B", "C", "D"]),
-        balance_datasets=bool(calibration_config.get("balance_datasets", True)),
-        shuffle_seed=int(calibration_config.get("shuffle_seed", 42)),
     )
 
     if conditioned_requested and context_assignments is None:

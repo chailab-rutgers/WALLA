@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, List
 import numpy as np
 
 from .base import WageringMethod
-from wagering.core.model import WhiteboxModel
+from wagering.utils.tensor_helpers import stable_row_softmax_2d
 
 
 class KLUniformWagers(WageringMethod):
@@ -31,14 +31,6 @@ class KLUniformWagers(WageringMethod):
         # Small smoothing term for all-zero confidence cases.
         self.confidence_epsilon = float(self.config.get("confidence_epsilon", 1e-8))
 
-    @staticmethod
-    def _softmax(logits: np.ndarray) -> np.ndarray:
-        max_logits = np.max(logits, axis=-1, keepdims=True)
-        stabilized = logits - max_logits
-        exp_vals = np.exp(stabilized)
-        denom = np.sum(exp_vals, axis=-1, keepdims=True)
-        return exp_vals / np.clip(denom, 1e-20, None)
-
     def _compute_from_logits(self, logits_3d: np.ndarray) -> np.ndarray:
         """Compute normalized wagers from logits with shape [B, M, O]."""
         batch_size, num_models, num_options = logits_3d.shape
@@ -47,27 +39,24 @@ class KLUniformWagers(WageringMethod):
                 f"Expected {self.num_models} models in logits, got {num_models}."
             )
 
-        probs = self._softmax(logits_3d)
+        max_logits = np.max(logits_3d, axis=-1, keepdims=True)
+        probs = np.exp(logits_3d - max_logits)
+        probs = probs / np.clip(np.sum(probs, axis=-1, keepdims=True), 1e-20, None)
         safe_probs = np.clip(probs, 1e-12, 1.0)
 
-        # Match Self-Certainty direction: KL(U || p) = -log(O) - (1/O) * sum_i log p_i
         kl_to_uniform = -np.log(float(num_options)) - np.mean(np.log(safe_probs), axis=-1)
-        confidences = np.maximum(kl_to_uniform, 0.0)
-
-        # Ensure strictly positive mass for normalization stability.
-        confidences = confidences + self.confidence_epsilon
-        row_sums = np.sum(confidences, axis=1, keepdims=True)
-        wagers = confidences / np.clip(row_sums, 1e-20, None)
+        confidences = np.maximum(kl_to_uniform, 0.0) + self.confidence_epsilon
+        wagers = stable_row_softmax_2d(confidences)
 
         if not np.all(np.isfinite(wagers)):
-            return np.ones((batch_size, self.num_models), dtype=np.float32) / self.num_models
+            raise ValueError("KLUniformWagers produced non-finite wagers")
 
         return wagers.astype(np.float32, copy=False)
 
     def compute_wagers(
         self,
         question: Optional[str] = None,
-        models: Optional[List[WhiteboxModel]] = None,
+        models: Optional[List[Any]] = None,
         model_logits: Optional[np.ndarray] = None,
         gold_label: Optional[np.ndarray] = None,
         **kwargs,
@@ -89,9 +78,10 @@ class KLUniformWagers(WageringMethod):
         del question, models, gold_label
 
         if model_logits is None:
-            # Fallback behavior aligned with equal wagers when logits are absent.
-            wagers = np.ones(self.num_models, dtype=np.float32) / self.num_models
-            return {"wagers": wagers}
+            raise ValueError(
+                "KLUniformWagers requires model_logits with shape [num_models, num_options] or "
+                "[batch_size, num_models, num_options]."
+            )
 
         logits = np.asarray(model_logits, dtype=np.float64)
 

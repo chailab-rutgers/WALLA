@@ -11,9 +11,9 @@ _include_models:
 - models/llama3_aloe_8b_alpha.yaml
 - models/llama3_aloe_8b_alpha.yaml
 - models/llama3_aloe_8b_alpha.yaml
-checkpoint_path: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints/dummy_kl_uniform_wagers
+checkpoint_base_dir: /research/projects/ecoai/yl2310/WALLA/checkpoints
+checkpoint_path: /research/projects/ecoai/yl2310/WALLA/checkpoints/dummy_kl_uniform_wagers
 calibrated: false
-_include_calibration: calibration/adaptive_temperature_pubmedqa_1000samples.yaml
 shuffle_data: true
 shuffle_seed: 18
 wagering_method:
@@ -27,11 +27,10 @@ report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: kl_uniform_wagers_pubmedqa_eval
-_include_test_datasets:
-- datasets/pubmedqa_context_only.yaml
-test_datasets:
-- display_name: pubmedqa_test
 option_tokens:
 - 'YES'
 - 'NO'
-cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
+cache_path: /research/projects/ecoai/yl2310/WALLA/cache
+included_test_dataset: datasets/pubmedqa_context_only.yaml
+test_dataset:
+  display_name: pubmedqa_test

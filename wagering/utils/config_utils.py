@@ -89,90 +89,55 @@ def _merge_model_includes(config: Dict[str, Any], base_dir: Path) -> None:
     del config["_include_models"]
 
 
-def _merge_dataset_includes(
+def _merge_dataset_include(
     config: Dict[str, Any],
     base_dir: Path,
     include_key: str,
     target_key: str,
 ) -> None:
-    """Resolve dataset include directives in-place."""
+    """Resolve a single dataset include directive in-place."""
     if include_key not in config:
         return
 
-    if not isinstance(config[include_key], list):
-        raise ValueError(f"{include_key} must be a list, got {type(config[include_key])}")
+    include_path = config[include_key]
+    if not isinstance(include_path, str):
+        raise ValueError(f"{include_key} must be a string path, got {type(include_path)}")
 
-    override_configs = config.get(target_key, [])
-    dataset_configs = []
-    for idx, dataset_path in enumerate(config[include_key]):
+    dataset_file = resolve_config_path(include_path, base_dir)
+    dataset_config = load_yaml_file(dataset_file)
+
+    override = config.get(target_key)
+    if override is not None:
+        if not isinstance(override, dict):
+            raise ValueError(f"{target_key} must be a dict, got {type(override)}")
+        dataset_config.update(override)
+
+    config[target_key] = dataset_config
+    del config[include_key]
+
+
+def _merge_ood_include(config: Dict[str, Any], base_dir: Path) -> None:
+    """Resolve OOD dataset include directives in-place."""
+    include_paths = config.get("_include_ood_datasets")
+    if include_paths is None:
+        return
+
+    if not isinstance(include_paths, list):
+        raise ValueError(f"_include_ood_datasets must be a list, got {type(include_paths)}")
+
+    override_configs = config.get("ood_datasets", [])
+    ood_configs: List[Dict[str, Any]] = []
+    for idx, dataset_path in enumerate(include_paths):
         dataset_file = resolve_config_path(dataset_path, base_dir)
         dataset_config = load_yaml_file(dataset_file)
 
         if idx < len(override_configs) and isinstance(override_configs[idx], dict):
             dataset_config.update(override_configs[idx])
 
-        dataset_configs.append(dataset_config)
+        ood_configs.append(dataset_config)
 
-    config[target_key] = dataset_configs
-    del config[include_key]
-
-
-def _merge_ood_include(config: Dict[str, Any], base_dir: Path) -> None:
-    """Resolve OOD dataset include directives in-place."""
-    include_single = config.get("_include_ood_dataset")
-    include_multi = config.get("_include_ood_datasets")
-
-    if include_single is None and include_multi is None:
-        return
-
-    if include_single is not None and include_multi is not None:
-        raise ValueError("Use either _include_ood_dataset or _include_ood_datasets, not both")
-
-    if include_multi is not None:
-        if not isinstance(include_multi, list):
-            raise ValueError(f"_include_ood_datasets must be a list, got {type(include_multi)}")
-
-        override_configs = config.get("ood_datasets", [])
-        ood_configs: List[Dict[str, Any]] = []
-        for idx, dataset_path in enumerate(include_multi):
-            dataset_file = resolve_config_path(dataset_path, base_dir)
-            dataset_config = load_yaml_file(dataset_file)
-
-            if idx < len(override_configs) and isinstance(override_configs[idx], dict):
-                dataset_config.update(override_configs[idx])
-
-            ood_configs.append(dataset_config)
-
-        config["ood_datasets"] = ood_configs
-        del config["_include_ood_datasets"]
-        return
-
-    # Backward compatibility: allow a single include path or a list under _include_ood_dataset.
-    if isinstance(include_single, list):
-        include_paths = include_single
-        override_configs = config.get("ood_datasets", [])
-        ood_configs: List[Dict[str, Any]] = []
-        for idx, dataset_path in enumerate(include_paths):
-            dataset_file = resolve_config_path(dataset_path, base_dir)
-            dataset_config = load_yaml_file(dataset_file)
-
-            if idx < len(override_configs) and isinstance(override_configs[idx], dict):
-                dataset_config.update(override_configs[idx])
-
-            ood_configs.append(dataset_config)
-
-        config["ood_datasets"] = ood_configs
-        del config["_include_ood_dataset"]
-        return
-
-    dataset_file = resolve_config_path(include_single, base_dir)
-    ood_config = load_yaml_file(dataset_file)
-
-    if "ood_dataset" in config and isinstance(config["ood_dataset"], dict):
-        ood_config.update(config["ood_dataset"])
-
-    config["ood_dataset"] = ood_config
-    del config["_include_ood_dataset"]
+    config["ood_datasets"] = ood_configs
+    del config["_include_ood_datasets"]
 
 
 def _load_config_with_includes(
@@ -187,8 +152,8 @@ def _load_config_with_includes(
     config = load_yaml_file(config_path)
 
     _merge_model_includes(config, base_dir)
-    _merge_dataset_includes(config, base_dir, "_include_datasets", "datasets")
-    _merge_dataset_includes(config, base_dir, "_include_test_datasets", "test_datasets")
+    _merge_dataset_include(config, base_dir, "included_dataset", "dataset")
+    _merge_dataset_include(config, base_dir, "included_test_dataset", "test_dataset")
     _merge_ood_include(config, base_dir)
 
     if "_include_calibration" in config:
@@ -215,8 +180,8 @@ def load_and_merge_configs(
     
     Supports:
     - `_include_models`: List of model config file paths (relative to base_dir)
-    - `_include_datasets`: List of dataset config file paths (relative to base_dir)
-    - `_include_test_datasets`: List of test dataset config file paths
+    - `included_dataset`: Training dataset config file path (relative to base_dir)
+    - `included_test_dataset`: In-distribution test dataset config file path
     
     Args:
         main_config_path: Path to main config file
@@ -242,6 +207,8 @@ def load_and_merge_configs(
         raise ValueError("Config must specify wagering_method")
     if "aggregation" not in config:
         raise ValueError("Config must specify aggregation")
+    if not config.get("cache_path"):
+        raise ValueError("Config must specify cache_path")
 
     _normalize_option_tokens(config)
     

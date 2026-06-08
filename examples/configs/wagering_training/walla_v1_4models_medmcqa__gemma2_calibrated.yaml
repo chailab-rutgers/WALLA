@@ -1,0 +1,55 @@
+_include_models:
+- models/gemma_2_9b_it.yaml
+- models/llama3_1_8b_instruct.yaml
+- models/llama3_aloe_8b_alpha.yaml
+- models/biomistral_7b.yaml
+calibrated: true
+_include_calibration: calibration/adaptive_temperature_medmcqa.yaml
+cache_path: /research/projects/ecoai/yl2310/WALLA/cache
+wagering_method:
+  name: walla_v1_augmented
+  config:
+    ablation_study: true
+    hidden_layers:
+    - 512
+    - 256
+    learning_rate: 5e-7
+    lr_decay_factor: 1.0
+    lr_decay_steps: 100
+    temperature: 2.0
+    grad_clip_norm: 1.0
+    normalize_hidden_states: false
+    device: cuda:0
+    common_hidden_dim: 4096
+aggregation:
+  name: linear_pooling
+  config: {}
+option_tokens:
+- A
+- B
+- C
+- D
+num_epochs: 1
+checkpoint_base_dir: /research/projects/ecoai/yl2310/WALLA/checkpoints
+training_batch_size: 100
+wager_score_plot_every: 1000
+shuffle_data: true
+shuffle_seed: 18
+early_stopping_patience: 10000
+early_stopping_criterion: online_learning
+use_brier_d_regret_for_early_stopping: true
+report_to_wandb: true
+wandb_project: multi-llm-wagering
+wandb_entity: null
+wandb_name: walla_v1_4models_medmcqa_calibrated
+shared_source_tripartition: true
+calibration:
+  apply_to_model_indices:
+  - 0
+included_dataset: datasets/medmcqa.yaml
+dataset:
+  train_split: train
+included_test_dataset: datasets/medmcqa.yaml
+test_dataset:
+  display_name: medmcqa_test
+  eval_split: train

@@ -1,0 +1,36 @@
+_include_models:
+- models/llama3_aloe_8b_alpha.yaml
+- models/llama3_1_8b_instruct.yaml
+checkpoint_base_dir: /research/projects/ecoai/yl2310/WALLA/checkpoints
+checkpoint_path: /research/projects/ecoai/yl2310/WALLA/checkpoints/dummy_kl_uniform_wagers
+calibrated: false
+_include_calibration: calibration/adaptive_temperature_mmlu.yaml
+cache_path: /research/projects/ecoai/yl2310/WALLA/cache
+shuffle_data: true
+shuffle_seed: 18
+wagering_method:
+  name: kl_uniform_wagers
+  config:
+    confidence_epsilon: 1.0e-08
+aggregation:
+  name: linear_pooling
+  config: {}
+option_tokens:
+- A
+- B
+- C
+- D
+report_to_wandb: false
+wandb_project: multi-llm-wagering
+wandb_entity: null
+wandb_name: kl_uniform_wagers_2models
+shared_source_tripartition: true
+_include_ood_datasets:
+- datasets/arc_challenge.yaml
+ood_datasets:
+- display_name: arc_challenge_ood
+  eval_split: test
+included_test_dataset: datasets/mmlu_full.yaml
+test_dataset:
+  display_name: mmlu_full_test
+  eval_split: auxiliary_train

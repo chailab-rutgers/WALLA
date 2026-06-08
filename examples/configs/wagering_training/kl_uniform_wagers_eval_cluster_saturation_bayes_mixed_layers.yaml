@@ -7,8 +7,10 @@ _include_models:
 - models/gemma_2_9b_it.yaml
 - models/gemma_2_9b_it.yaml
 - models/gemma_2_9b_it.yaml
-checkpoint_path: /common/users/yl2310/MultiLLMs/checkpoints/dummy_kl_uniform_wagers
+checkpoint_base_dir: /common/users/yl2310/WALLA/checkpoints
+checkpoint_path: /common/users/yl2310/WALLA/checkpoints/dummy_kl_uniform_wagers
 calibrated: false
+cache_path: /common/users/yl2310/WALLA/cache
 shuffle_data: true
 shuffle_seed: 18
 wagering_method:
@@ -22,10 +24,9 @@ report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: kl_uniform_wagers_cluster_saturation_bayes_mixed_layers_eval
-_include_test_datasets:
-- datasets/cluster_saturation_bayesX.yaml
-test_datasets:
-- display_name: cluster_saturation_bayes_test
 option_tokens:
 - '1'
 - '0'
+included_test_dataset: datasets/cluster_saturation_bayesX.yaml
+test_dataset:
+  display_name: cluster_saturation_bayes_test

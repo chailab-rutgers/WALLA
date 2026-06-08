@@ -23,7 +23,7 @@ class AggregationFunction(ABC):
         
         Args:
             model_logits: np.ndarray of shape [batch_size, num_models, num_options] (batch mode)
-                or [num_models, num_options] (single sample, backwards compatibility)
+                or [num_models, num_options] (single sample)
                 Logits from each model for each option
             wagers: np.ndarray of shape [batch_size, num_models] (batch mode)
                 or [num_models] (single sample)

@@ -8,8 +8,8 @@ for multiple LLMs based on questions, models, or both.
 from .base import WageringMethod
 from .factory import load_wagering_method
 from .equal_wagers import EqualWagers
-from .centralized_wagers import CentralizedWagers
-from .mse_br_wagers_v2_augmented import MSEBrWagersV2Augmented
+from .stacked_generalization import StackedGeneralization
+from .walla_v1_augmented import WallaV1Augmented
 from .route_llm_bert import RouteLLMBertWagers
 from .router_dc import RouterDCWagers
 from .packllm_perplexity_wagers import PackLLMPerplexityWagers
@@ -20,8 +20,8 @@ __all__ = [
     "WageringMethod",
     "load_wagering_method",
     "EqualWagers",
-    "CentralizedWagers",
-    "MSEBrWagersV2Augmented",
+    "StackedGeneralization",
+    "WallaV1Augmented",
     "RouteLLMBertWagers",
     "RouterDCWagers",
     "PackLLMPerplexityWagers",

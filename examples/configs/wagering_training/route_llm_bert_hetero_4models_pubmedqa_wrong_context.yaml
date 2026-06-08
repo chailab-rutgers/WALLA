@@ -4,7 +4,6 @@ _include_models:
 - models/llama3_aloe_8b_alpha.yaml
 - models/biomistral_7b.yaml
 calibrated: false
-_include_calibration: calibration/adaptive_temperature_pubmedqa_1000samples.yaml
 wagering_method:
   name: route_llm_bert
   config:
@@ -19,8 +18,6 @@ wagering_method:
     freeze_bert: false
     pubmedqa_strip_context: true
     router_dropout: 0.1
-    ranking_loss_weight: 0.0
-    ranking_margin: 0.1
     device: cuda:0
 aggregation:
   name: linear_pooling
@@ -28,15 +25,11 @@ aggregation:
 option_tokens:
 - 'YES'
 - 'NO'
-cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
-_include_datasets:
-- datasets/pubmedqa_context_only_wrong_context.yaml
+cache_path: /research/projects/ecoai/yl2310/WALLA/cache
 num_epochs: 5
-checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
+checkpoint_base_dir: /research/projects/ecoai/yl2310/WALLA/checkpoints
 training_batch_size: 100
 wager_score_plot_every: 200
-auto_resume: false
-balance_training_datasets: true
 shuffle_data: true
 shuffle_seed: 18
 early_stopping_patience: 5
@@ -46,7 +39,7 @@ wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: route_llm_bert_hetero_4models_pubmedqa_wrong_context
 shared_source_tripartition: true
-_include_test_datasets:
-- datasets/pubmedqa_context_only_wrong_context.yaml
-test_datasets:
-- display_name: pubmedqa_test
+included_dataset: datasets/pubmedqa_context_only_wrong_context.yaml
+included_test_dataset: datasets/pubmedqa_context_only_wrong_context.yaml
+test_dataset:
+  display_name: pubmedqa_test

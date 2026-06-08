@@ -1,0 +1,49 @@
+_include_models:
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+- models/gemma_2_9b_it.yaml
+calibrated: false
+wagering_method:
+  name: walla_v2
+  config:
+    hidden_layers:
+    - 512
+    - 256
+    learning_rate: 5e-6
+    lr_decay_factor: 1
+    lr_decay_steps: 100
+    temperature: 2.0
+    grad_clip_norm: 1.0
+    normalize_hidden_states: false
+    device: cuda:0
+    common_hidden_dim: 4096
+aggregation:
+  name: linear_pooling
+  config: {}
+option_tokens:
+- '1'
+- '0'
+cache_path: /research/projects/ecoai/yl2310/WALLA/cache
+num_epochs: 20
+checkpoint_base_dir: /research/projects/ecoai/yl2310/WALLA/checkpoints
+training_batch_size: 100
+shuffle_data: true
+shuffle_seed: 18
+early_stopping_patience: 1500
+early_stopping_criterion: online_learning
+use_min_kl_for_early_stopping: true
+report_to_wandb: true
+wandb_project: multi-llm-wagering
+wandb_entity: null
+wandb_name: walla_v2_cluster_saturation_bayesX_mixed_layers_12
+included_dataset: datasets/cluster_saturation_bayesX.yaml
+included_test_dataset: datasets/cluster_saturation_bayesX.yaml

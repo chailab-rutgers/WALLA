@@ -4,7 +4,8 @@ _include_models:
 - models/llama3_aloe_8b_alpha.yaml
 - models/biomistral_7b.yaml
 calibrated: false
-_include_calibration: calibration/adaptive_temperature_1000samples.yaml
+_include_calibration: calibration/adaptive_temperature_medmcqa.yaml
+cache_path: /research/projects/ecoai/yl2310/WALLA/cache
 wagering_method:
   name: nirt_router
   config:
@@ -35,16 +36,10 @@ option_tokens:
 - B
 - C
 - D
-_include_datasets:
-- datasets/medmcqa.yaml
-datasets:
-- train_split: train
 num_epochs: 5
-checkpoint_base_dir: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints
+checkpoint_base_dir: /research/projects/ecoai/yl2310/WALLA/checkpoints
 training_batch_size: 50
 wager_score_plot_every: 500
-auto_resume: false
-balance_training_datasets: true
 shuffle_data: true
 shuffle_seed: 18
 early_stopping_patience: 5
@@ -54,8 +49,10 @@ wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: nirt_router_4models_medmcqa
 shared_source_tripartition: true
-_include_test_datasets:
-- datasets/medmcqa.yaml
-test_datasets:
-- display_name: medmcqa_test
+included_dataset: datasets/medmcqa.yaml
+dataset:
+  train_split: train
+included_test_dataset: datasets/medmcqa.yaml
+test_dataset:
+  display_name: medmcqa_test
   eval_split: train

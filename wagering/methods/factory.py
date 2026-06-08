@@ -68,10 +68,10 @@ def load_wagering_method(
     
     # Import methods locally to avoid circular imports
     from .equal_wagers import EqualWagers
-    from .centralized_wagers import CentralizedWagers
-    from .mse_br_wagers_v2 import MSEBrWagersV2
-    from .mse_br_wagers_v3 import MSEBrWagersV3
-    from .mse_br_wagers_v2_augmented import MSEBrWagersV2Augmented
+    from .stacked_generalization import StackedGeneralization
+    from .walla_v1 import WallaV1
+    from .walla_v2 import WallaV2
+    from .walla_v1_augmented import WallaV1Augmented
     from .route_llm_bert import RouteLLMBertWagers
     from .router_dc import RouterDCWagers
     from .packllm_perplexity_wagers import PackLLMPerplexityWagers
@@ -80,10 +80,10 @@ def load_wagering_method(
     
     methods = {
         "equal_wagers": EqualWagers,
-        "centralized_wagers": CentralizedWagers,
-        "mse_br_wagers_v2": MSEBrWagersV2,
-        "mse_br_wagers_v3": MSEBrWagersV3,
-        "mse_br_wagers_v2_augmented": MSEBrWagersV2Augmented,
+        "stacked_generalization": StackedGeneralization,
+        "walla_v1": WallaV1,
+        "walla_v2": WallaV2,
+        "walla_v1_augmented": WallaV1Augmented,
         "route_llm_bert": RouteLLMBertWagers,
         "router_dc": RouterDCWagers,
         "packllm_perplexity_wagers": PackLLMPerplexityWagers,

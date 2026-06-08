@@ -6,9 +6,7 @@ Implements the BERT encoder + linear routing head described in RouteLLM
 representation to logits over experts, then softmax with temperature.
 
 When human preference pairs are unavailable, training uses the same pooled
-cross-entropy as other trainable routers (see update()), with an optional
-pairwise ranking loss that prefers higher router scores for experts with lower
-NLL on the gold label (proxy for preference).
+cross-entropy as other trainable routers (see update()).
 """
 
 from __future__ import annotations
@@ -31,15 +29,23 @@ if str(SRC_PATH) not in sys.path:
 from transformers import AutoModel, AutoTokenizer
 
 from .base import WageringMethod
-from .utils import preprocess_pubmedqa_prompts_for_embedding
 from wagering.aggregation.linear_pooling import LinearPooling
+from wagering.utils.checkpoint_loading import (
+    load_module_state,
+    load_optimizer_state,
+    load_scheduler_state,
+)
+from wagering.utils.encoder_batching import (
+    encode_questions_per_model_batch,
+    encode_transformer_batch,
+)
 
 
 class RouteLLMBertWagers(WageringMethod):
     """
     BERT prompt encoder + linear router logits over models (RouteLLM BERT variant).
 
-    Unlike CentralizedWagers, routing uses only the task prompt text encoded by
+    Unlike StackedGeneralization, routing uses only the task prompt text encoded by
     BERT, not LLM forward hidden states.
     """
 
@@ -58,8 +64,6 @@ class RouteLLMBertWagers(WageringMethod):
         self.pubmedqa_strip_context = bool(cfg.get("pubmedqa_strip_context", False))
         self.debug_router_prompts = bool(cfg.get("debug_router_prompts", False))
         self.router_dropout_p = float(cfg.get("router_dropout", 0.1))
-        self.ranking_loss_weight = float(cfg.get("ranking_loss_weight", 0.0))
-        self.ranking_margin = float(cfg.get("ranking_margin", 0.1))
         self.lr_decay_factor = float(cfg.get("lr_decay_factor", 1.0))
         self.lr_decay_steps = int(cfg.get("lr_decay_steps", 100))
 
@@ -99,21 +103,12 @@ class RouteLLMBertWagers(WageringMethod):
 
         self._training = True
         self._cached_wagers: Optional[torch.Tensor] = None
-        self._cached_router_logits: Optional[torch.Tensor] = None
         self._debug_logged_once: bool = False
 
     def _encode_questions_batch(self, questions: List[str]) -> torch.Tensor:
-        processed = preprocess_pubmedqa_prompts_for_embedding(
-            questions,
-            # Do not regex-strip content here. When pubmedqa_strip_context is enabled for this method,
-            # the trainer/evaluator is responsible for passing the dataset's prompt_without_context
-            # variant verbatim (even if it contains "Context:" text).
-            strip_context=False,
-        )
         if self.debug_router_prompts and (not self._debug_logged_once) and len(questions) > 0:
             self._debug_logged_once = True
             q0 = str(questions[0])
-            p0 = str(processed[0]) if len(processed) > 0 else ""
             print(
                 "[route_llm_bert debug] pubmedqa_strip_context="
                 f"{self.pubmedqa_strip_context} concat_prompt_embeddings={self.concat_prompt_embeddings} "
@@ -121,66 +116,29 @@ class RouteLLMBertWagers(WageringMethod):
             )
             print(
                 "[route_llm_bert debug] raw_q0_has_Context="
-                f"{('Context:' in q0)} processed_q0_has_Context={('Context:' in p0)}"
+                f"{('Context:' in q0)}"
             )
             print("[route_llm_bert debug] raw_q0_head:", q0[:220].replace("\n", "\\n"))
-            print("[route_llm_bert debug] processed_q0_head:", p0[:220].replace("\n", "\\n"))
-        inputs = self.tokenizer(
-            processed,
-            return_tensors="pt",
-            truncation=True,
-            max_length=self.max_seq_length,
-            padding=True,
-        ).to(self.device)
-
-        grad_bert = self._training and not self.freeze_bert
-        with torch.set_grad_enabled(grad_bert):
-            outputs = self.bert(**inputs)
-
-        if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
-            pooled = outputs.pooler_output
-        else:
-            pooled = outputs.last_hidden_state[:, 0, :]
-        return pooled
+        return encode_transformer_batch(
+            questions,
+            tokenizer=self.tokenizer,
+            model=self.bert,
+            device=self.device,
+            max_seq_length=self.max_seq_length,
+            training=self._training,
+            freeze_backbone=self.freeze_bert,
+            strip_context=False,
+        )
 
     def _encode_questions_per_model_batch(self, questions_per_model: List[List[str]]) -> torch.Tensor:
-        if not isinstance(questions_per_model, list) or len(questions_per_model) != self.num_models:
-            raise ValueError(
-                "route_llm_bert expects questions_per_model as a list of length num_models "
-                f"(expected {self.num_models})."
-            )
-        batch_size = len(questions_per_model[0]) if self.num_models > 0 else 0
-        for mi, prompts in enumerate(questions_per_model):
-            if len(prompts) != batch_size:
-                raise ValueError(
-                    "route_llm_bert questions_per_model batch mismatch: "
-                    f"model_index={mi}, len={len(prompts)}, expected={batch_size}"
-                )
-
-        if not self.concat_prompt_embeddings:
-            return self._encode_questions_batch(list(questions_per_model[0]))
-
-        flat_prompts: List[str] = []
-        for mi in range(self.num_models):
-            flat_prompts.extend([str(p) for p in questions_per_model[mi]])
-        unique_prompts: List[str] = []
-        index_by_prompt: Dict[str, int] = {}
-        for p in flat_prompts:
-            if p in index_by_prompt:
-                continue
-            index_by_prompt[p] = len(unique_prompts)
-            unique_prompts.append(p)
-
-        unique_emb = self._encode_questions_batch(unique_prompts)  # [U, H]
-        per_model_emb: List[torch.Tensor] = []
-        for mi in range(self.num_models):
-            idx = torch.as_tensor(
-                [index_by_prompt[str(p)] for p in questions_per_model[mi]],
-                device=self.device,
-                dtype=torch.long,
-            )
-            per_model_emb.append(unique_emb.index_select(0, idx))
-        return torch.cat(per_model_emb, dim=1)
+        return encode_questions_per_model_batch(
+            questions_per_model,
+            num_models=self.num_models,
+            device=self.device,
+            concat_prompt_embeddings=self.concat_prompt_embeddings,
+            encode_batch=self._encode_questions_batch,
+            method_name="route_llm_bert",
+        )
 
     def compute_wagers(
         self,
@@ -239,43 +197,8 @@ class RouteLLMBertWagers(WageringMethod):
 
         if self._training:
             self._cached_wagers = wagers
-            self._cached_router_logits = logits
 
         return {"wagers": wagers.detach().cpu().numpy()}
-
-    def _pairwise_ranking_loss(
-        self,
-        router_logits: torch.Tensor,
-        model_logits: torch.Tensor,
-        gold_label: torch.Tensor,
-        gold_label_distribution: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Prefer higher router scores for experts with lower NLL on the gold class."""
-        # model_logits: [B, M, C]
-        log_probs = F.log_softmax(model_logits, dim=-1)
-        if gold_label_distribution is not None:
-            # Expected NLL under soft labels q: -sum_k q_k log p_k
-            q = gold_label_distribution.to(device=log_probs.device, dtype=log_probs.dtype)
-            if q.ndim != 2 or q.shape[0] != log_probs.shape[0] or q.shape[1] != log_probs.shape[2]:
-                raise ValueError(
-                    "gold_label_distribution must be shape [batch_size, num_options], "
-                    f"got {tuple(q.shape)}"
-                )
-            q_expanded = q.unsqueeze(1).expand(-1, self.num_models, -1)  # [B, M, C]
-            nll = -(q_expanded * log_probs).sum(dim=-1)  # [B, M]
-        else:
-            idx = gold_label.view(-1, 1, 1).expand(-1, self.num_models, 1)
-            nll = -torch.gather(log_probs, dim=2, index=idx).squeeze(2)  # [B, M]
-
-        # logits[b,m]-logits[b,k]: want > margin when nll[b,m] < nll[b,k]
-        z = router_logits.unsqueeze(2) - router_logits.unsqueeze(1)  # [B, M, M]
-        nll_diff = nll.unsqueeze(2) - nll.unsqueeze(1)  # [B, M, M], negative => m better than k
-        mask = (nll_diff < 0).to(z.dtype)
-        eye = torch.eye(self.num_models, device=z.device, dtype=torch.bool)
-        mask = mask.masked_fill(eye.unsqueeze(0), 0.0)
-        hinge = F.relu(self.ranking_margin - z) * mask
-        denom = mask.sum()
-        return hinge.sum() / (denom + 1e-8)
 
     def update(
         self,
@@ -296,9 +219,7 @@ class RouteLLMBertWagers(WageringMethod):
             )
 
         wagers = self._cached_wagers
-        router_logits = self._cached_router_logits
         self._cached_wagers = None
-        self._cached_router_logits = None
 
         model_logits_tensor = torch.as_tensor(model_logits, dtype=torch.float32, device=self.device)
         gold_label_tensor = torch.as_tensor(gold_label, dtype=torch.long, device=self.device)
@@ -326,16 +247,6 @@ class RouteLLMBertWagers(WageringMethod):
             ce_loss = -torch.mean(torch.log(probs_at_gold + 1e-10))
 
         loss = ce_loss
-        if self.ranking_loss_weight > 0.0 and router_logits is not None:
-            rank_loss = self._pairwise_ranking_loss(
-                router_logits,
-                model_logits_tensor,
-                gold_label_tensor,
-                gold_label_distribution=(
-                    gold_label_distribution_tensor if gold_label_distribution is not None else None
-                ),
-            )
-            loss = loss + self.ranking_loss_weight * rank_loss
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -353,15 +264,12 @@ class RouteLLMBertWagers(WageringMethod):
             np.mean(batch_aggregated_probs_np[np.arange(batch_size), gold_label])
         )
 
-        out: Dict[str, Any] = {
+        return {
             "loss": float(loss.item()),
             "batch_accuracy": batch_accuracy,
             "avg_prob_correct": avg_prob_correct,
             "batch_size": batch_size,
         }
-        if self.ranking_loss_weight > 0.0:
-            out["ce_loss"] = float(ce_loss.item())
-        return out
 
     def get_trainable_parameters(self) -> List[torch.nn.Parameter]:
         params = list(self.router_head.parameters())
@@ -376,7 +284,6 @@ class RouteLLMBertWagers(WageringMethod):
         self.dropout.train()
         self._training = True
         self._cached_wagers = None
-        self._cached_router_logits = None
 
     def eval_mode(self) -> None:
         self.router_head.eval()
@@ -384,7 +291,6 @@ class RouteLLMBertWagers(WageringMethod):
         self.dropout.eval()
         self._training = False
         self._cached_wagers = None
-        self._cached_router_logits = None
 
     def state_dict(self) -> Dict[str, Any]:
         state: Dict[str, Any] = {
@@ -402,8 +308,6 @@ class RouteLLMBertWagers(WageringMethod):
                 "freeze_bert": self.freeze_bert,
                 "pubmedqa_strip_context": self.pubmedqa_strip_context,
                 "router_dropout": self.router_dropout_p,
-                "ranking_loss_weight": self.ranking_loss_weight,
-                "ranking_margin": self.ranking_margin,
                 "lr_decay_factor": self.lr_decay_factor,
                 "lr_decay_steps": self.lr_decay_steps,
                 "device": self.device_str,
@@ -412,25 +316,7 @@ class RouteLLMBertWagers(WageringMethod):
         return state
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        if "bert_state_dict" in state_dict:
-            self.bert.load_state_dict(state_dict["bert_state_dict"])
-        if "router_head_state_dict" in state_dict:
-            self.router_head.load_state_dict(state_dict["router_head_state_dict"])
-        if "optimizer_state_dict" in state_dict:
-            try:
-                self.optimizer.load_state_dict(state_dict["optimizer_state_dict"])
-            except (ValueError, KeyError) as e:
-                import logging
-
-                logging.getLogger("wagering").warning(
-                    "Could not load optimizer state dict: %s. Using fresh optimizer.", e
-                )
-        if "scheduler_state_dict" in state_dict:
-            try:
-                self.scheduler.load_state_dict(state_dict["scheduler_state_dict"])
-            except (ValueError, KeyError) as e:
-                import logging
-
-                logging.getLogger("wagering").warning(
-                    "Could not load scheduler state dict: %s. Using fresh scheduler.", e
-                )
+        load_module_state(self.bert, state_dict.get("bert_state_dict"))
+        load_module_state(self.router_head, state_dict.get("router_head_state_dict"))
+        load_optimizer_state(self.optimizer, state_dict.get("optimizer_state_dict"))
+        load_scheduler_state(self.scheduler, state_dict.get("scheduler_state_dict"))

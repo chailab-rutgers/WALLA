@@ -1,7 +1,8 @@
 _include_models:
 - models/gemma_2_9b_it.yaml
-checkpoint_path: /research/projects/ecoai/yl2310/MultiLLMs/checkpoints/dummy_kl_uniform_wagers
-cache_path: /research/projects/ecoai/yl2310/MultiLLMs/cache
+checkpoint_base_dir: /research/projects/ecoai/yl2310/WALLA/checkpoints
+checkpoint_path: /research/projects/ecoai/yl2310/WALLA/checkpoints/dummy_kl_uniform_wagers
+cache_path: /research/projects/ecoai/yl2310/WALLA/cache
 calibrated: false
 shuffle_data: true
 shuffle_seed: 18
@@ -11,8 +12,6 @@ wagering_method:
 aggregation:
   name: linear_pooling
   config: {}
-_include_test_datasets:
-- datasets/cluster_saturation_bayesX.yaml
 option_tokens:
 - '1'
 - '0'
@@ -20,3 +19,4 @@ report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: equal_wagers_cluster_saturation_bayesX_mixed_layers_eval_with_evidence
+included_test_dataset: datasets/cluster_saturation_bayesX.yaml

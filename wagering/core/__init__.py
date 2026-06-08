@@ -6,7 +6,7 @@ from wagering.core.generation_parameters import (
     GenerationParametersFactory,
 )
 from wagering.core.model import WhiteboxModel
-from wagering.core.metrics import ECE
+from wagering.utils.wagering_metrics import ECE
 from wagering.core.common import load_external_module
 
 __all__ = [

@@ -68,17 +68,13 @@ _include_models:
   - models/gemma_2_9b_it.yaml
   - models/llama3_aloe_8b_alpha.yaml
 
-# Include shared dataset configs
-_include_datasets:
-  - datasets/mmlu.yaml
-  - datasets/medmcqa.yaml
+# Include shared dataset config
+included_dataset: datasets/mmlu.yaml
 
 # Override only split-specific settings
-datasets:
-  - train_split: train
-    size: 8
-  - train_split: train
-    size: 8
+dataset:
+  train_split: train
+  size: 8
 
 # Rest of config...
 ```
@@ -91,24 +87,20 @@ _include_models:
   - models/gemma_2_9b_it.yaml
   - models/llama3_aloe_8b_alpha.yaml
 
-# Include test dataset configs
-_include_test_datasets:
-  - datasets/mmlu.yaml
-  - datasets/medmcqa.yaml
+# Include test dataset config
+included_test_dataset: datasets/mmlu.yaml
 
 # Override split-specific settings
-test_datasets:
-  - display_name: mmlu_test
-    eval_split: test
-    size: 8
-  - display_name: medmcqa_test
-    eval_split: validation
-    size: 8
+test_dataset:
+  display_name: mmlu_test
+  eval_split: test
+  size: 8
 
 # OOD dataset
-_include_ood_dataset: datasets/arc_easy.yaml
-ood_dataset:
-  display_name: arc_easy_ood
+_include_ood_datasets:
+- datasets/arc_easy.yaml
+ood_datasets:
+- display_name: arc_easy_ood
   eval_split: test
   size: 8
 ```
@@ -117,7 +109,7 @@ ood_dataset:
 
 ```yaml
 calibrated: false
-_include_calibration: calibration/adaptive_temperature_1000samples.yaml
+_include_calibration: calibration/adaptive_temperature.yaml
 ```
 
 The calibration config is loaded once and trains one temperature head per model on cached hidden states and cached option logits. The frozen heads are then reused by training and evaluation, including eval-only methods such as equal_wagers.
@@ -165,17 +157,15 @@ display_name: my_dataset
 text_column: input
 label_column: output
 batch_size: 8
-max_prompt_tokens: 1200
-load_from_disk: false
 trust_remote_code: false
-instruct: true
 ```
+
+For PubMedQA, use the `pubmedqa_*` split keys (e.g. `pubmedqa_split_ratios`, `pubmedqa_train_target_split`) and `pubmedqa_wrong_context_routing` for wrong-context experiments — not the generic `split_ratios` / `source_split` names.
 
 Then reference it in your configs:
 
 ```yaml
-_include_datasets:
-  - datasets/my_dataset.yaml
+included_dataset: datasets/my_dataset.yaml
 ```
 
 ## See Also

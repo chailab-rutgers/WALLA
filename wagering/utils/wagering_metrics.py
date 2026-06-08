@@ -9,10 +9,109 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from sklearn.metrics import roc_auc_score
+from sklearn.preprocessing import MinMaxScaler
 
 from wagering.core.dataset import Dataset
 
 log = logging.getLogger("wagering")
+
+
+def bernoulli_tv_distance(pred_probs: List[float], target_probs: List[float]) -> float:
+    """Mean total variation distance between Bernoulli(pred) and Bernoulli(target)."""
+    pred = np.asarray(pred_probs, dtype=np.float64)
+    target = np.asarray(target_probs, dtype=np.float64)
+
+    if pred.shape != target.shape:
+        raise ValueError("pred_probs and target_probs must have the same shape")
+    if pred.ndim != 1:
+        raise ValueError("pred_probs and target_probs must be 1D arrays")
+    if np.any(pred < 0.0) or np.any(pred > 1.0):
+        raise ValueError("pred_probs must be in [0, 1]")
+    if np.any(target < 0.0) or np.any(target > 1.0):
+        raise ValueError("target_probs must be in [0, 1]")
+
+    return float(np.mean(np.abs(pred - target)))
+
+
+def bernoulli_kl_divergence(
+    pred_probs: List[float],
+    target_probs: List[float],
+    eps: float = 1e-10,
+) -> float:
+    """Mean KL divergence D_KL(Bernoulli(target) || Bernoulli(pred))."""
+    pred = np.asarray(pred_probs, dtype=np.float64)
+    target = np.asarray(target_probs, dtype=np.float64)
+
+    if pred.shape != target.shape:
+        raise ValueError("pred_probs and target_probs must have the same shape")
+    if pred.ndim != 1:
+        raise ValueError("pred_probs and target_probs must be 1D arrays")
+    if np.any(pred < 0.0) or np.any(pred > 1.0):
+        raise ValueError("pred_probs must be in [0, 1]")
+    if np.any(target < 0.0) or np.any(target > 1.0):
+        raise ValueError("target_probs must be in [0, 1]")
+
+    pred_safe = np.clip(pred, eps, 1.0 - eps)
+    target_safe = np.clip(target, eps, 1.0 - eps)
+
+    kl = (
+        target_safe * np.log(target_safe / pred_safe)
+        + (1.0 - target_safe) * np.log((1.0 - target_safe) / (1.0 - pred_safe))
+    )
+    return float(np.mean(kl))
+
+
+class ECE:
+    """Expected Calibration Error for confidence-style estimators."""
+
+    def __init__(self, normalize: bool = False, n_bins: int = 20):
+        self.normalize = normalize
+        self.n_bins = n_bins
+
+    def __str__(self) -> str:
+        return "ece"
+
+    @staticmethod
+    def normalize_scores(scores: List[float]) -> List[float]:
+        scores_array = np.asarray(scores).reshape(-1, 1)
+        return MinMaxScaler().fit_transform(scores_array).flatten()
+
+    def __call__(self, estimator: List[float], target: List[float]) -> float:
+        if len(estimator) != len(target):
+            raise ValueError("Estimator and target must have the same length.")
+
+        estimator_array = np.asarray(estimator, dtype=np.float64)
+        target_array = np.asarray(target, dtype=np.float64)
+
+        confidences = estimator_array
+
+        if self.normalize:
+            confidences = self.normalize_scores(confidences)
+
+        if np.any(confidences < 0.0) or np.any(confidences > 1.0):
+            raise ValueError("ECE confidences must be in [0, 1]")
+
+        if np.any(target_array < 0.0) or np.any(target_array > 1.0):
+            raise ValueError("ECE targets must be in [0, 1]")
+
+        bin_edges = np.linspace(0.0, 1.0, self.n_bins + 1)
+        ece, n_total = 0.0, len(confidences)
+
+        for i in range(self.n_bins):
+            lo, hi = bin_edges[i], bin_edges[i + 1]
+            in_bin = (
+                (confidences > lo) & (confidences <= hi)
+                if i > 0
+                else (confidences >= lo) & (confidences <= hi)
+            )
+            if not np.any(in_bin):
+                continue
+
+            acc_bin = np.mean(target_array[in_bin])
+            conf_bin = np.mean(confidences[in_bin])
+            ece += (np.sum(in_bin) / n_total) * abs(acc_bin - conf_bin)
+
+        return float(ece)
 
 
 def compute_model_probs_from_logits(model_logits: np.ndarray) -> np.ndarray:
@@ -121,9 +220,8 @@ def resolve_positive_option_index(
 
 def build_gold_label_distribution_for_rows(
     labels: np.ndarray,
-    dataset_indices: np.ndarray,
     example_local_indices: Optional[np.ndarray],
-    datasets: List[Dataset],
+    dataset: Dataset,
     option_tokens: List[str],
     num_options: int,
 ) -> np.ndarray:
@@ -138,43 +236,35 @@ def build_gold_label_distribution_for_rows(
     out = np.eye(num_options, dtype=np.float64)[labels_arr]
     if example_local_indices is None:
         return out
-    ds_ix = np.asarray(dataset_indices, dtype=np.int32)
-    loc_ix = np.asarray(example_local_indices, dtype=np.int32)
-    for dataset_idx in np.unique(ds_ix).tolist():
-        ds_idx = int(dataset_idx)
-        if ds_idx < 0 or ds_idx >= len(datasets):
-            continue
-        ds = datasets[ds_idx]
-        dataset_name = getattr(ds, "cache_dataset_name", None)
-        if not is_cluster_saturation_dataset_name(dataset_name):
-            continue
-        if not hasattr(ds, "probabilistic_labels"):
-            continue
-        if num_options != 2:
-            raise ValueError(
-                "probabilistic_labels are only supported for binary option sets "
-                f"(num_options={num_options})"
-            )
-        pos_idx = resolve_positive_option_index(
-            getattr(ds, "positive_label", None),
-            option_tokens,
-            num_options,
+
+    dataset_name = getattr(dataset, "cache_dataset_name", None)
+    if not is_cluster_saturation_dataset_name(dataset_name):
+        return out
+    if not hasattr(dataset, "probabilistic_labels"):
+        return out
+    if num_options != 2:
+        raise ValueError(
+            "probabilistic_labels are only supported for binary option sets "
+            f"(num_options={num_options})"
         )
-        if pos_idx is None:
-            raise ValueError(
-                "Could not resolve positive option index for probabilistic labels"
-            )
-        mask = ds_ix == ds_idx
-        local = loc_ix[mask].astype(np.int64, copy=False)
-        gt_probs_all = np.asarray(ds.probabilistic_labels, dtype=np.float64)
-        p_pos = gt_probs_all[local]
-        p_pos = np.clip(p_pos, 0.0, 1.0)
-        neg_idx = 1 - int(pos_idx)
-        soft = np.zeros((int(mask.sum()), num_options), dtype=np.float64)
-        soft[:, int(pos_idx)] = p_pos
-        soft[:, neg_idx] = 1.0 - p_pos
-        out[mask] = soft
-    return out
+    pos_idx = resolve_positive_option_index(
+        getattr(dataset, "positive_label", None),
+        option_tokens,
+        num_options,
+    )
+    if pos_idx is None:
+        raise ValueError(
+            "Could not resolve positive option index for probabilistic labels"
+        )
+    loc_ix = np.asarray(example_local_indices, dtype=np.int32).astype(np.int64, copy=False)
+    gt_probs_all = np.asarray(dataset.probabilistic_labels, dtype=np.float64)
+    p_pos = gt_probs_all[loc_ix]
+    p_pos = np.clip(p_pos, 0.0, 1.0)
+    neg_idx = 1 - int(pos_idx)
+    soft = np.zeros((n, num_options), dtype=np.float64)
+    soft[:, int(pos_idx)] = p_pos
+    soft[:, neg_idx] = 1.0 - p_pos
+    return soft
 
 
 def compute_model_bernoulli_kl_to_gt_scores(
@@ -291,7 +381,6 @@ def compute_brier_dynamic_regret(
 
 def compute_meta_metrics(
     wagers: np.ndarray,
-    best_expert_ids: np.ndarray,
     model_brier_scores: Optional[np.ndarray] = None,
     model_rank_scores: Optional[np.ndarray] = None,
     best_model_ids: Optional[np.ndarray] = None,
@@ -300,32 +389,20 @@ def compute_meta_metrics(
     kendall_tau = None
     best_model_mrr = None
     if model_rank_scores is not None and best_model_ids is not None:
-        try:
-            kendall_tau = _compute_kendall_tau_from_scores(model_rank_scores, wagers)
-
-            predicted_order = np.argsort(-wagers, axis=1, kind="stable")
-            best_model_ranks = np.argmax(
-                predicted_order == best_model_ids[:, np.newaxis], axis=1
-            ) + 1
-            best_model_mrr = float(np.mean(1.0 / best_model_ranks))
-        except Exception as e:
-            log.warning(f"Failed to compute kendall_tau/best_model_mrr from rank scores: {e}")
-            kendall_tau = None
-            best_model_mrr = None
+        kendall_tau = _compute_kendall_tau_from_scores(model_rank_scores, wagers)
+        predicted_order = np.argsort(-wagers, axis=1, kind="stable")
+        best_model_ranks = np.argmax(
+            predicted_order == best_model_ids[:, np.newaxis], axis=1
+        ) + 1
+        best_model_mrr = float(np.mean(1.0 / best_model_ranks))
     elif model_brier_scores is not None:
-        try:
-            kendall_tau = _compute_kendall_tau_from_scores(-model_brier_scores, wagers)
-
-            best_model_ids = np.argmin(model_brier_scores, axis=1)
-            predicted_order = np.argsort(-wagers, axis=1, kind="stable")
-            best_model_ranks = np.argmax(
-                predicted_order == best_model_ids[:, np.newaxis], axis=1
-            ) + 1
-            best_model_mrr = float(np.mean(1.0 / best_model_ranks))
-        except Exception as e:
-            log.warning(f"Failed to compute kendall_tau/best_model_mrr: {e}")
-            kendall_tau = None
-            best_model_mrr = None
+        kendall_tau = _compute_kendall_tau_from_scores(-model_brier_scores, wagers)
+        best_model_ids = np.argmin(model_brier_scores, axis=1)
+        predicted_order = np.argsort(-wagers, axis=1, kind="stable")
+        best_model_ranks = np.argmax(
+            predicted_order == best_model_ids[:, np.newaxis], axis=1
+        ) + 1
+        best_model_mrr = float(np.mean(1.0 / best_model_ranks))
 
     return {
         "kendall_tau": kendall_tau,
@@ -362,4 +439,396 @@ def compute_normalized_wager_probability_stats(
         "wager_prob_var_per_model": [float(x) for x in per_var.tolist()],
         "brier_best_wager_prob_mean": float(np.mean(at_best)),
         "brier_best_wager_prob_var": float(np.var(at_best, ddof=0)),
+    }
+
+
+def compute_inverse_hhi(wagers: np.ndarray) -> float:
+    """Effective number of models (inverse HHI) averaged over examples."""
+    w = np.asarray(wagers, dtype=np.float64)
+    sum_w = np.sum(w, axis=1)
+    sum_w2 = np.sum(w * w, axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        n_eff = np.divide(sum_w * sum_w, sum_w2)
+    return float(np.nanmean(n_eff))
+
+
+def compute_classification_metrics(
+    predictions: np.ndarray,
+    probs: np.ndarray,
+    labels: np.ndarray,
+    *,
+    soft_binary_targets: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    """Accuracy, NLL, and multiclass Brier score."""
+    predictions_arr = np.asarray(predictions, dtype=np.int64)
+    probs_arr = np.asarray(probs, dtype=np.float64)
+    labels_arr = np.asarray(labels, dtype=np.int64)
+
+    accuracy = float(np.mean(predictions_arr == labels_arr))
+    correct_class_probs = probs_arr[np.arange(len(labels_arr)), labels_arr]
+    nll = float(-np.mean(np.log(correct_class_probs + 1e-10)))
+
+    num_options = probs_arr.shape[1]
+    if soft_binary_targets is not None:
+        y = np.asarray(soft_binary_targets, dtype=np.float64)
+        if y.shape != probs_arr.shape:
+            raise ValueError(
+                f"soft_binary_targets shape {y.shape} must match probs {probs_arr.shape}"
+            )
+        brier = float(np.mean(np.sum((probs_arr - y) ** 2, axis=1)))
+    else:
+        one_hot_labels = np.eye(num_options, dtype=np.float64)[labels_arr]
+        brier = float(np.mean(np.sum((probs_arr - one_hot_labels) ** 2, axis=1)))
+
+    return {"accuracy": accuracy, "nll": nll, "brier": brier}
+
+
+def compute_confidence_metrics(
+    probs: np.ndarray,
+    predictions: np.ndarray,
+    labels: np.ndarray,
+) -> Dict[str, float]:
+    """AUC (correctness vs max prob) and ECE."""
+    probs_arr = np.asarray(probs, dtype=np.float64)
+    predictions_arr = np.asarray(predictions, dtype=np.int64)
+    labels_arr = np.asarray(labels, dtype=np.int64)
+
+    max_probs = probs_arr.max(axis=1)
+    correctness_int = (predictions_arr == labels_arr).astype(int)
+    if len(np.unique(correctness_int)) >= 2:
+        auc = float(roc_auc_score(correctness_int, max_probs))
+    else:
+        auc = float("nan")
+
+    ece_metric = ECE(normalize=False, n_bins=20)
+    confidences = max_probs
+    correctness = (predictions_arr == labels_arr).astype(float)
+    finite_mask = np.isfinite(confidences) & np.isfinite(correctness)
+    if not np.any(finite_mask):
+        raise ValueError("No finite confidence/correctness pairs available for ECE")
+    ece = float(
+        ece_metric(
+            confidences[finite_mask].tolist(),
+            correctness[finite_mask].tolist(),
+        )
+    )
+    return {"auc": auc, "ece": ece}
+
+
+def compute_avg_wager_summaries(
+    wagers_history: np.ndarray,
+    sigmoid_wagers_history: Optional[np.ndarray] = None,
+    total_payout_history: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    """Average wagers, sigmoid wagers, and net payout per model."""
+    w = np.asarray(wagers_history, dtype=np.float64)
+    out: Dict[str, Any] = {
+        "avg_wager_per_model": np.mean(w, axis=0).astype(np.float64),
+        "avg_wager_total": float(np.mean(np.sum(w, axis=1))),
+        "avg_sigmoid_wager_per_model": None,
+        "avg_sigmoid_wager_total": None,
+        "avg_net_payout_per_model": None,
+        "avg_net_payout_total": None,
+    }
+
+    if sigmoid_wagers_history is not None:
+        sw = np.asarray(sigmoid_wagers_history, dtype=np.float64)
+        if sw.ndim != 2 or sw.shape[0] != w.shape[0]:
+            raise ValueError(
+                f"sigmoid_wagers_history shape {sw.shape} must be [N, M] matching wagers {w.shape}"
+            )
+        out["avg_sigmoid_wager_per_model"] = np.mean(sw, axis=0).astype(np.float64)
+        out["avg_sigmoid_wager_total"] = float(np.mean(np.sum(sw, axis=1)))
+
+    if total_payout_history is not None:
+        payout_arr = np.asarray(total_payout_history, dtype=np.float64)
+        if payout_arr.ndim != 2 or payout_arr.shape[0] != w.shape[0]:
+            raise ValueError(
+                f"total_payout_history shape {payout_arr.shape} must be [N, M] matching wagers {w.shape}"
+            )
+        out["avg_net_payout_per_model"] = np.mean(payout_arr, axis=0).astype(np.float64)
+        out["avg_net_payout_total"] = float(np.mean(np.sum(payout_arr, axis=1)))
+
+    return out
+
+
+def resolve_binary_probability_labels(
+    dataset: Dataset,
+    num_examples: int,
+) -> Optional[np.ndarray]:
+    """
+    Return per-example positive-class probabilities when configured.
+
+    Uses ``probability_labels`` (from ``probability_label_column``). Raises if only
+    ``probabilistic_labels`` is present without ``probability_labels``.
+    """
+    prob_labs = getattr(dataset, "probability_labels", None)
+    if prob_labs is None and getattr(dataset, "probabilistic_labels", None) is not None:
+        raise ValueError(
+            "Dataset provides `probabilistic_labels` but not `probability_labels`. "
+            "KL/TV must use `probability_labels` (configured via `probability_label_column`)."
+        )
+    if isinstance(prob_labs, (list, tuple)) and len(prob_labs) == num_examples:
+        return np.asarray(prob_labs, dtype=np.float64)
+    return None
+
+
+def _resolve_binary_pos_idx(dataset: Dataset, option_tokens: List[str]) -> int:
+    pos_marker = getattr(dataset, "positive_label", None)
+    resolved = resolve_positive_option_index(pos_marker, option_tokens, 2)
+    return int(resolved) if resolved is not None else 0
+
+
+def compute_bernoulli_metrics_binary(
+    aggregated_probs: np.ndarray,
+    labels: np.ndarray,
+    dataset: Dataset,
+    option_tokens: List[str],
+    *,
+    prob_labs: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    """Bernoulli KL/TV for binary tasks; optionally soft-binary Brier."""
+    probs = np.asarray(aggregated_probs, dtype=np.float64)
+    labels_arr = np.asarray(labels, dtype=np.int64)
+    if probs.shape[1] != 2:
+        raise ValueError("compute_bernoulli_metrics_binary requires binary probs")
+
+    pos_idx = _resolve_binary_pos_idx(dataset, option_tokens)
+    pred_vec = probs[:, pos_idx]
+    if prob_labs is not None:
+        target_vec = np.asarray(prob_labs, dtype=np.float64)
+    else:
+        target_vec = (labels_arr == pos_idx).astype(np.float64)
+
+    out = {
+        "bernoulli_kl": bernoulli_kl_divergence(pred_vec.tolist(), target_vec.tolist()),
+        "bernoulli_tv": bernoulli_tv_distance(pred_vec.tolist(), target_vec.tolist()),
+        "brier": float("nan"),
+    }
+    if prob_labs is not None:
+        y_soft = np.zeros((probs.shape[0], 2), dtype=np.float64)
+        y_soft[:, pos_idx] = prob_labs
+        y_soft[:, 1 - pos_idx] = 1.0 - prob_labs
+        out["brier"] = float(np.mean(np.sum((probs - y_soft) ** 2, axis=1)))
+    return out
+
+
+def compute_wagering_derived_metrics(
+    model_logits: np.ndarray,
+    aggregated_probs: np.ndarray,
+    labels: np.ndarray,
+    wagers: np.ndarray,
+    dataset: Dataset,
+    option_tokens: List[str],
+    *,
+    prob_labs: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    """Brier dynamic regret, meta metrics, and normalized wager probability stats."""
+    num_examples = aggregated_probs.shape[0]
+    num_options = aggregated_probs.shape[1]
+    pos_idx = _resolve_binary_pos_idx(dataset, option_tokens) if num_options == 2 else 0
+
+    if num_options == 2 and prob_labs is not None and len(prob_labs) == num_examples:
+        brier_d_regret = compute_brier_dynamic_regret(
+            model_logits,
+            aggregated_probs,
+            labels,
+            gt_positive_probs=prob_labs,
+            positive_option_index=pos_idx,
+        )
+        model_brier_scores = compute_model_brier_scores_soft_binary(
+            model_logits,
+            gt_positive_probs=prob_labs,
+            positive_option_index=pos_idx,
+        )
+    else:
+        brier_d_regret = compute_brier_dynamic_regret(
+            model_logits, aggregated_probs, labels
+        )
+        model_brier_scores = compute_model_brier_scores(model_logits, labels)
+
+    meta_metrics = compute_meta_metrics(wagers, model_brier_scores)
+    brier_best_model_ids = np.argmin(model_brier_scores, axis=1)
+    wager_prob_stats = compute_normalized_wager_probability_stats(
+        wagers, brier_best_model_ids
+    )
+
+    return {
+        "brier_d_regret": brier_d_regret,
+        "kendall_tau": meta_metrics["kendall_tau"],
+        "best_model_mrr": meta_metrics["best_model_mrr"],
+        "wager_prob_mean_per_model": wager_prob_stats["wager_prob_mean_per_model"],
+        "wager_prob_var_per_model": wager_prob_stats["wager_prob_var_per_model"],
+        "brier_best_wager_prob_mean": wager_prob_stats["brier_best_wager_prob_mean"],
+        "brier_best_wager_prob_var": wager_prob_stats["brier_best_wager_prob_var"],
+    }
+
+
+def compute_subset_any_model_wrong_metrics(
+    predictions: np.ndarray,
+    aggregated_probs: np.ndarray,
+    labels: np.ndarray,
+    model_logits: np.ndarray,
+    wagers_history: np.ndarray,
+    dataset: Dataset,
+    option_tokens: List[str],
+    *,
+    prob_labs: Optional[np.ndarray] = None,
+    avg_inference_time_per_batch_s: float,
+) -> Dict[str, Any]:
+    """Metrics on examples where at least one base model prediction is wrong."""
+    base_preds = np.argmax(model_logits, axis=2)
+    base_correct = base_preds == labels[:, None]
+    subset_mask = ~np.all(base_correct, axis=1)
+    subset_n = int(np.sum(subset_mask))
+
+    subset_metrics: Dict[str, Any] = {
+        "subset_name": "any_model_wrong",
+        "num_examples": subset_n,
+    }
+    if subset_n == 0:
+        return subset_metrics
+
+    sub_labels = labels[subset_mask]
+    sub_probs = aggregated_probs[subset_mask]
+    sub_preds = predictions[subset_mask]
+    sub_wagers = wagers_history[subset_mask]
+    sub_model_logits = model_logits[subset_mask]
+    sub_prob_labs = prob_labs[subset_mask] if prob_labs is not None else None
+
+    cls = compute_classification_metrics(sub_preds, sub_probs, sub_labels)
+    subset_metrics.update(cls)
+
+    conf = compute_confidence_metrics(sub_probs, sub_preds, sub_labels)
+    subset_metrics.update(conf)
+
+    subset_metrics["inverse_hhi"] = compute_inverse_hhi(sub_wagers)
+    subset_metrics["avg_inference_time_per_batch_s"] = avg_inference_time_per_batch_s
+
+    derived = compute_wagering_derived_metrics(
+        sub_model_logits,
+        sub_probs,
+        sub_labels,
+        sub_wagers,
+        dataset,
+        option_tokens,
+        prob_labs=sub_prob_labs,
+    )
+    subset_metrics["brier_d_regret"] = derived["brier_d_regret"]
+    subset_metrics["kendall_tau"] = derived["kendall_tau"]
+    subset_metrics["best_model_mrr"] = derived["best_model_mrr"]
+
+    if sub_probs.shape[1] == 2:
+        bern = compute_bernoulli_metrics_binary(
+            sub_probs,
+            sub_labels,
+            dataset,
+            option_tokens,
+            prob_labs=sub_prob_labs,
+        )
+        subset_metrics["bernoulli_kl"] = bern["bernoulli_kl"]
+        subset_metrics["bernoulli_tv"] = bern["bernoulli_tv"]
+        if sub_prob_labs is not None:
+            subset_metrics["brier"] = bern["brier"]
+
+    return subset_metrics
+
+
+def compute_evaluation_metrics(
+    *,
+    predictions: np.ndarray,
+    aggregated_probs: np.ndarray,
+    labels: np.ndarray,
+    model_logits_stacked: np.ndarray,
+    wagers_history: np.ndarray,
+    dataset: Dataset,
+    option_tokens: List[str],
+    inference_times_s: Sequence[float],
+    sigmoid_wagers_history: Optional[np.ndarray] = None,
+    total_payout_history: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    """Compute all evaluation metrics after the inference batch loop."""
+    num_examples = len(labels)
+    model_logits = np.transpose(model_logits_stacked, (1, 0, 2))
+    prob_labs = resolve_binary_probability_labels(dataset, num_examples)
+
+    inverse_hhi = compute_inverse_hhi(wagers_history)
+    avg_inference_time_per_batch_s = (
+        float(np.mean(np.asarray(inference_times_s, dtype=np.float64)))
+        if inference_times_s
+        else float("nan")
+    )
+
+    soft_binary_targets = None
+    if aggregated_probs.shape[1] == 2 and prob_labs is not None:
+        pos_idx = _resolve_binary_pos_idx(dataset, option_tokens)
+        soft_binary_targets = np.zeros((num_examples, 2), dtype=np.float64)
+        soft_binary_targets[:, pos_idx] = prob_labs
+        soft_binary_targets[:, 1 - pos_idx] = 1.0 - prob_labs
+
+    cls = compute_classification_metrics(
+        predictions, aggregated_probs, labels, soft_binary_targets=soft_binary_targets
+    )
+    conf = compute_confidence_metrics(aggregated_probs, predictions, labels)
+
+    bernoulli_kl = float("nan")
+    bernoulli_tv = float("nan")
+    if aggregated_probs.shape[1] == 2:
+        bern = compute_bernoulli_metrics_binary(
+            aggregated_probs,
+            labels,
+            dataset,
+            option_tokens,
+            prob_labs=prob_labs,
+        )
+        bernoulli_kl = bern["bernoulli_kl"]
+        bernoulli_tv = bern["bernoulli_tv"]
+        if prob_labs is not None:
+            cls["brier"] = bern["brier"]
+
+    derived = compute_wagering_derived_metrics(
+        model_logits,
+        aggregated_probs,
+        labels,
+        wagers_history,
+        dataset,
+        option_tokens,
+        prob_labs=prob_labs,
+    )
+    wager_summaries = compute_avg_wager_summaries(
+        wagers_history,
+        sigmoid_wagers_history=sigmoid_wagers_history,
+        total_payout_history=total_payout_history,
+    )
+    subset_metrics = compute_subset_any_model_wrong_metrics(
+        predictions,
+        aggregated_probs,
+        labels,
+        model_logits,
+        wagers_history,
+        dataset,
+        option_tokens,
+        prob_labs=prob_labs,
+        avg_inference_time_per_batch_s=avg_inference_time_per_batch_s,
+    )
+
+    return {
+        "inverse_hhi": inverse_hhi,
+        "avg_inference_time_per_batch_s": avg_inference_time_per_batch_s,
+        "accuracy": cls["accuracy"],
+        "nll": cls["nll"],
+        "brier": cls["brier"],
+        "bernoulli_kl": bernoulli_kl,
+        "bernoulli_tv": bernoulli_tv,
+        "auc": conf["auc"],
+        "ece": conf["ece"],
+        "brier_d_regret": derived["brier_d_regret"],
+        "kendall_tau": derived["kendall_tau"],
+        "best_model_mrr": derived["best_model_mrr"],
+        "wager_prob_mean_per_model": derived["wager_prob_mean_per_model"],
+        "wager_prob_var_per_model": derived["wager_prob_var_per_model"],
+        "brier_best_wager_prob_mean": derived["brier_best_wager_prob_mean"],
+        "brier_best_wager_prob_var": derived["brier_best_wager_prob_var"],
+        "subset_any_model_wrong": subset_metrics,
+        **wager_summaries,
     }
