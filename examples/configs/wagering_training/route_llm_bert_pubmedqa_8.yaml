@@ -20,7 +20,7 @@ wagering_method:
     grad_clip_norm: 1.0
     weight_decay: 0.01
     freeze_bert: false
-    pubmedqa_strip_context: false
+    pubmedqa_strip_context: true
     router_dropout: 0.1
     device: cuda:0
 aggregation:

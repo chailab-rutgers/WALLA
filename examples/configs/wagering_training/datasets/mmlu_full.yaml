@@ -17,3 +17,10 @@ prompt: 'Return the label of the correct answer for the question below.
 
   Answer:'
 description: ''
+partition:
+  mode: uniform
+  ratios:
+  - 0.8
+  - 0.1
+  - 0.1
+

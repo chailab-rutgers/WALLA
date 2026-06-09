@@ -25,7 +25,12 @@ prompt_without_context: 'Question:
   Answer with YES or NO. Answer:'
 description: ''
 pubmedqa_wrong_context_routing: true
-pubmedqa_split_ratios:
-- 0.8
-- 0.1
-- 0.1
+partition:
+  mode: pubmedqa
+  ratios:
+  - 0.8
+  - 0.1
+  - 0.1
+  train_target: train_val
+  eval_target: test
+

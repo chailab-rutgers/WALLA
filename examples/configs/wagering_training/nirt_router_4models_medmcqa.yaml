@@ -48,7 +48,6 @@ report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: nirt_router_4models_medmcqa
-shared_source_tripartition: true
 included_dataset: datasets/medmcqa.yaml
 dataset:
   train_split: train

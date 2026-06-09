@@ -243,9 +243,9 @@ def main() -> int:
         repeat_ckpt_dir = _repeat_checkpoint_dir(base_ckpt_dir, repeat_idx, run_tag)
         repeat_cfg = vary_shuffle_seed(cfg, repeat_idx)
         repeat_cfg["checkpoint_base_dir"] = str(repeat_ckpt_dir)
-        repeat_cfg.setdefault("eval_checkpoint_dir", str(repeat_ckpt_dir / "eval"))
+        repeat_cfg["eval_checkpoint_dir"] = str(repeat_ckpt_dir / "eval")
         if args.checkpoint_path is None:
-            repeat_cfg.setdefault("checkpoint_path", str(repeat_ckpt_dir))
+            repeat_cfg["checkpoint_path"] = str(repeat_ckpt_dir)
 
         temp_cfg_path = config_path.parent / f".tmp_wagering_repeat_{run_tag}_{repeat_idx:04d}.yaml"
         repeat_cfg_logged = run_tag_dir / f"repeat_{repeat_idx:04d}.config.yaml"

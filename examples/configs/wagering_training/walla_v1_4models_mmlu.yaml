@@ -41,8 +41,7 @@ use_brier_d_regret_for_early_stopping: true
 report_to_wandb: true
 wandb_project: multi-llm-wagering
 wandb_entity: null
-wandb_name: walla_v1_4models_mmlu_calibrated
-shared_source_tripartition: true
+wandb_name: walla_v1_4models_mmlu
 _include_ood_datasets:
 - datasets/arc_challenge.yaml
 ood_datasets:

@@ -89,7 +89,6 @@ def main(
         )
 
     dataset_split_seed = int(args.get("dataset_split_seed", 42))
-    sst = bool(args.get("shared_source_tripartition", False))
     tr_peer = [args["dataset"]] if args.get("dataset") else None
     test_datasets = []
     if "test_dataset" in args:
@@ -97,10 +96,9 @@ def main(
             args["test_dataset"],
             split="test",
             random_seed=dataset_split_seed,
-            shared_source_tripartition=sst,
-            tripartition_peer_dataset_configs=tr_peer,
+            partition_peer_dataset_configs=tr_peer,
             infer_eval_split_train_without_peer=False,
-            force_shared_source_tripartition=sst,
+            force_partition=True,
         )
         test_datasets = [(test_ds, test_name)]
 
@@ -110,8 +108,7 @@ def main(
             args["ood_datasets"],
             split="test",
             random_seed=dataset_split_seed,
-            shared_source_tripartition=sst,
-            tripartition_peer_dataset_configs=tr_peer,
+            partition_peer_dataset_configs=tr_peer,
             infer_eval_split_train_without_peer=False,
         )
         ood_datasets.extend((ds, name) for ds, name in zip(ood_ds, ood_names))

@@ -45,7 +45,6 @@ report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: router_dc_hetero_4models_pubmedqa
-shared_source_tripartition: true
 included_dataset: datasets/pubmedqa_context_only.yaml
 included_test_dataset: datasets/pubmedqa_context_only.yaml
 test_dataset:

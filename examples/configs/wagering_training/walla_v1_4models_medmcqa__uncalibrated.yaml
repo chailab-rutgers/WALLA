@@ -42,7 +42,6 @@ report_to_wandb: true
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: walla_v1_4models_medmcqa_calibrated
-shared_source_tripartition: true
 included_dataset: datasets/medmcqa.yaml
 dataset:
   train_split: train

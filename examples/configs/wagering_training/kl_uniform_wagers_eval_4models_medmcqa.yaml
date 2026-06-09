@@ -26,7 +26,6 @@ report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: kl_uniform_wagers_4models
-shared_source_tripartition: true
 _include_ood_datasets:
 - datasets/arc_challenge.yaml
 ood_datasets:

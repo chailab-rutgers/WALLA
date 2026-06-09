@@ -3,14 +3,6 @@ _include_models:
 - models/gemma_2_9b_it.yaml
 - models/gemma_2_9b_it.yaml
 - models/gemma_2_9b_it.yaml
-- models/gemma_2_9b_it.yaml
-- models/gemma_2_9b_it.yaml
-- models/gemma_2_9b_it.yaml
-- models/gemma_2_9b_it.yaml
-- models/gemma_2_9b_it.yaml
-- models/gemma_2_9b_it.yaml
-- models/gemma_2_9b_it.yaml
-- models/gemma_2_9b_it.yaml
 checkpoint_base_dir: /research/projects/ecoai/yl2310/WALLA/checkpoints
 checkpoint_path: /research/projects/ecoai/yl2310/WALLA/checkpoints/dummy_kl_uniform_wagers
 cache_path: /research/projects/ecoai/yl2310/WALLA/cache

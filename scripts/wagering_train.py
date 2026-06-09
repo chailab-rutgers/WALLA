@@ -107,15 +107,12 @@ def main(config_path: Optional[str] = None, calibration_path: Optional[str] = No
         args["dataset"],
         split="train",
         random_seed=dataset_split_seed,
-        shared_source_tripartition=bool(args.get("shared_source_tripartition", False)),
-        tripartition_peer_dataset_configs=test_peer,
+        partition_peer_dataset_configs=test_peer,
     )
     log.info("Loaded training dataset: %s", dataset_name)
 
     validation_split_ratio = float(args.get("validation_split_ratio", 0.1))
-    derived_val_split_ratio = getattr(train_dataset, "pubmedqa_train_val_split_ratio", None)
-    if derived_val_split_ratio is None:
-        derived_val_split_ratio = getattr(train_dataset, "source_tripartition_val_ratio", None)
+    derived_val_split_ratio = getattr(train_dataset, "partition_val_ratio", None)
     if derived_val_split_ratio is not None:
         derived_val_split_ratio = float(derived_val_split_ratio)
         if abs(validation_split_ratio - derived_val_split_ratio) > 1e-12:

@@ -101,7 +101,6 @@ def require_pipeline_caches_for_repeat(
     option_tokens = args.get("option_tokens", ["A", "B", "C", "D"])
     model_paths = [model_cfg["path"] for model_cfg in model_cfgs]
     dataset_split_seed = int(args.get("dataset_split_seed", 42))
-    sst = bool(args.get("shared_source_tripartition", False))
 
     misses: List[CacheMiss] = []
     requires_training = len(wagering_method.get_trainable_parameters()) > 0 and bool(
@@ -114,8 +113,7 @@ def require_pipeline_caches_for_repeat(
             args["dataset"],
             split="train",
             random_seed=dataset_split_seed,
-            shared_source_tripartition=sst,
-            tripartition_peer_dataset_configs=test_peer,
+            partition_peer_dataset_configs=test_peer,
         )
         assign_pubmedqa_context_models(
             [train_dataset], model_paths, random_seed=dataset_split_seed
@@ -139,10 +137,9 @@ def require_pipeline_caches_for_repeat(
                 args["test_dataset"],
                 split="test",
                 random_seed=dataset_split_seed,
-                shared_source_tripartition=sst,
-                tripartition_peer_dataset_configs=tr_peer,
+                partition_peer_dataset_configs=tr_peer,
                 infer_eval_split_train_without_peer=False,
-                force_shared_source_tripartition=sst,
+                force_partition=True,
             )
             eval_datasets.append(test_ds)
         if args.get("ood_datasets"):
@@ -150,8 +147,7 @@ def require_pipeline_caches_for_repeat(
                 args["ood_datasets"],
                 split="test",
                 random_seed=dataset_split_seed,
-                shared_source_tripartition=sst,
-                tripartition_peer_dataset_configs=tr_peer,
+                partition_peer_dataset_configs=tr_peer,
                 infer_eval_split_train_without_peer=False,
             )
             eval_datasets.extend(ood_ds)

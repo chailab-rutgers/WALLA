@@ -37,11 +37,16 @@ _DATASET_CONFIG_EPHEMERAL_KEYS = frozenset(
 
 # Strips from cache signatures for shared-source 6:2:2 view so on-disk cache matches
 # a plain load of the same HF split (no tripartition metadata in the key).
-_TRIPARTITION_EXCLUDED_CACHE_KEYS = frozenset(
-    {
-        "source_tripartition_ratios",
-    }
-)
+_PARTITION_EXCLUDED_CACHE_KEYS = frozenset({"partition"})
+
+_PARTITION_TARGET_ALIASES = {
+    "train": "train",
+    "val": "validation",
+    "validation": "validation",
+    "test": "test",
+    "train_val": "train_val",
+    "train+val": "train_val",
+}
 
 
 def dataset_for_checkpoint_hash(dataset_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -81,10 +86,10 @@ def _build_dataset_cache_config_signature(
         "resolved_config_name": resolved_config_name,
         "dataset_target_split": dataset_target_split,
         # Keep random seed in signature only if explicitly pinned in dataset config.
-        "split_seed": dataset_cfg.get("split_seed") if "split_seed" in dataset_cfg else None,
+        "split_seed": _partition_seed_from_cfg(dataset_cfg),
         "dataset_config": dict(dataset_for_sig),
     }
-    if "split_seed" not in dataset_cfg:
+    if _partition_seed_from_cfg(dataset_cfg) is None:
         # Ignore global run-time seed to maximize cache reuse across shuffle sweeps.
         signature_payload["runtime_random_seed"] = None
     else:
@@ -146,15 +151,15 @@ def _resolve_hf_identity_and_split(dataset_cfg: Dict[str, Any], *, load_split: s
     return hf_id, str(actual_split)
 
 
-def _shared_source_tripartition_peer_matched(
+def _partition_peer_matched(
     dataset_cfg: Dict[str, Any],
     *,
     load_split: str,
-    tripartition_peer_dataset_configs: Optional[Sequence[Dict[str, Any]]],
+    partition_peer_dataset_configs: Optional[Sequence[Dict[str, Any]]],
     infer_eval_split_train_without_peer: bool,
 ) -> bool:
     """
-    True when shared-source 8:1:1 should apply.
+    True when a test/eval load should use the same partitioned source as its train peer.
 
     Either an explicit training peer matches (same resolved HF identity and aligned split strings),
     or (eval-only) ``infer_eval_split_train_without_peer`` is True, ``load_split`` is
@@ -164,9 +169,9 @@ def _shared_source_tripartition_peer_matched(
     h1, s1 = _resolve_hf_identity_and_split(dataset_cfg, load_split=str(load_split))
     if not h1:
         return False
-    if tripartition_peer_dataset_configs:
+    if partition_peer_dataset_configs:
         peer_split = "test" if str(load_split) == "train" else "train"
-        for peer in tripartition_peer_dataset_configs:
+        for peer in partition_peer_dataset_configs:
             if not isinstance(peer, dict):
                 continue
             h2, s2 = _resolve_hf_identity_and_split(peer, load_split=peer_split)
@@ -195,7 +200,7 @@ def _build_tripartition_full_source_cache_config(
     """
     for_sig: Dict[str, Any] = {}
     for k, v in dataset_cfg.items():
-        if k in _DATASET_CONFIG_EPHEMERAL_KEYS or k in _TRIPARTITION_EXCLUDED_CACHE_KEYS:
+        if k in _DATASET_CONFIG_EPHEMERAL_KEYS or k in _PARTITION_EXCLUDED_CACHE_KEYS:
             continue
         for_sig[k] = v
     # Align with a normal training-stub config: a single train_split for the source HF split.
@@ -211,10 +216,10 @@ def _build_tripartition_full_source_cache_config(
         "resolved_split": resolved_huggingface_split,
         "resolved_config_name": resolved_config_name,
         "dataset_target_split": None,
-        "split_seed": dataset_cfg.get("split_seed") if "split_seed" in dataset_cfg else None,
+        "split_seed": _partition_seed_from_cfg(dataset_cfg),
         "dataset_config": for_sig,
     }
-    if "split_seed" not in dataset_cfg:
+    if _partition_seed_from_cfg(dataset_cfg) is None:
         signature_payload["runtime_random_seed"] = None
     else:
         signature_payload["runtime_random_seed"] = random_seed
@@ -250,76 +255,146 @@ def calibration_dataset_config_is_pubmedqa(dataset_config: Dict[str, Any]) -> bo
     return _is_pubmedqa_dataset_config(dataset_config)
 
 
-def _normalize_pubmedqa_split_ratios(raw_ratios: Any) -> Tuple[float, float, float]:
-    """Normalize PubMedQA split ratios to a valid (train, val, test) tuple."""
+def _normalize_partition_ratios(raw_ratios: Any) -> Tuple[float, float, float]:
+    """Normalize partition ratios to a valid (train, val, test) tuple."""
     default_ratios = (0.8, 0.1, 0.1)
     if raw_ratios is None:
         return default_ratios
 
     if not isinstance(raw_ratios, Sequence) or len(raw_ratios) != 3:
-        log.warning(
-            "Invalid pubmedqa_split_ratios=%s. Falling back to default ratios %s.",
-            raw_ratios,
-            default_ratios,
+        raise ValueError(
+            f"partition.ratios must be a sequence of three numbers (got {raw_ratios!r})."
         )
-        return default_ratios
 
-    try:
-        ratio_array = np.array([float(v) for v in raw_ratios], dtype=np.float64)
-    except (TypeError, ValueError):
-        log.warning(
-            "Could not parse pubmedqa_split_ratios=%s. Falling back to default ratios %s.",
-            raw_ratios,
-            default_ratios,
-        )
-        return default_ratios
-
+    ratio_array = np.array([float(v) for v in raw_ratios], dtype=np.float64)
     if np.any(ratio_array < 0) or not np.any(ratio_array > 0):
-        log.warning(
-            "Non-positive pubmedqa_split_ratios=%s. Falling back to default ratios %s.",
-            raw_ratios,
-            default_ratios,
-        )
-        return default_ratios
+        raise ValueError(f"partition.ratios must be positive (got {raw_ratios!r}).")
 
     ratio_array = ratio_array / ratio_array.sum()
     return tuple(float(v) for v in ratio_array.tolist())
 
 
-def _normalize_shared_source_tripartition_ratios(raw_ratios: Any) -> Tuple[float, float, float]:
-    """Normalize shared-source tripartition ratios to a valid (train, val, test) tuple."""
-    default_ratios = (0.8, 0.1, 0.1)
-    if raw_ratios is None:
-        return default_ratios
-
-    if not isinstance(raw_ratios, Sequence) or len(raw_ratios) != 3:
-        log.warning(
-            "Invalid source_tripartition_ratios=%s. Falling back to default ratios %s.",
-            raw_ratios,
-            default_ratios,
+def _normalize_partition_target(target_split: str) -> str:
+    normalized_target = _PARTITION_TARGET_ALIASES.get(str(target_split).strip().lower())
+    if normalized_target is None:
+        raise ValueError(
+            f"Unsupported partition target '{target_split}'. "
+            "Use one of: train, validation, test, train_val."
         )
-        return default_ratios
+    return normalized_target
 
-    try:
-        ratio_array = np.array([float(v) for v in raw_ratios], dtype=np.float64)
-    except (TypeError, ValueError):
-        log.warning(
-            "Could not parse source_tripartition_ratios=%s. Falling back to default ratios %s.",
-            raw_ratios,
-            default_ratios,
+
+def _compute_split_counts(
+    split_ratios: Tuple[float, float, float],
+    pool_size: int,
+) -> Tuple[int, int, int]:
+    ratio_array = np.array(split_ratios, dtype=np.float64)
+    raw_counts = ratio_array * float(pool_size)
+    split_counts = np.floor(raw_counts).astype(np.int64)
+    remainder = int(pool_size - split_counts.sum())
+    if remainder > 0:
+        residual_order = np.argsort(-(raw_counts - split_counts))
+        for idx in residual_order[:remainder]:
+            split_counts[idx] += 1
+    return tuple(int(v) for v in split_counts.tolist())
+
+
+def _partition_class_pools(
+    class_pools: Sequence[np.ndarray],
+    split_ratios: Tuple[float, float, float],
+    split_seed: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Tuple[int, int, int]]:
+    min_class_count = int(min(pool.shape[0] for pool in class_pools))
+    rng = np.random.RandomState(int(split_seed))
+
+    trimmed_pools = []
+    for pool in class_pools:
+        trimmed = np.array(pool, copy=True)
+        rng.shuffle(trimmed)
+        trimmed_pools.append(trimmed[:min_class_count])
+
+    train_count, val_count, test_count = _compute_split_counts(split_ratios, min_class_count)
+
+    train_parts = []
+    val_parts = []
+    test_parts = []
+    for pool in trimmed_pools:
+        train_parts.append(pool[:train_count])
+        val_parts.append(pool[train_count : train_count + val_count])
+        test_parts.append(pool[train_count + val_count :])
+
+    train_indices = np.concatenate(train_parts)
+    val_indices = np.concatenate(val_parts)
+    test_indices = np.concatenate(test_parts)
+
+    rng.shuffle(train_indices)
+    rng.shuffle(val_indices)
+    rng.shuffle(test_indices)
+
+    return train_indices, val_indices, test_indices, (train_count, val_count, test_count)
+
+
+def _resolve_partition_cfg(
+    dataset_cfg: Dict[str, Any],
+    random_seed: Optional[int],
+) -> Dict[str, Any]:
+    partition = dataset_cfg.get("partition")
+    if not isinstance(partition, dict):
+        raise ValueError(f"dataset config partition must be a mapping (got {partition!r}).")
+
+    mode = str(partition.get("mode", "")).strip().lower()
+    if mode not in {"uniform", "balanced_binary", "pubmedqa"}:
+        raise ValueError(
+            f"partition.mode must be one of uniform, balanced_binary, pubmedqa (got {mode!r})."
         )
-        return default_ratios
 
-    if np.any(ratio_array < 0) or not np.any(ratio_array > 0):
-        log.warning(
-            "Non-positive source_tripartition_ratios=%s. Falling back to default ratios %s.",
-            raw_ratios,
-            default_ratios,
+    seed_candidate = partition.get("seed", random_seed if random_seed is not None else 42)
+    return {
+        "mode": mode,
+        "ratios": _normalize_partition_ratios(partition.get("ratios")),
+        "seed": int(seed_candidate),
+        "train_target": partition.get("train_target", "train_val"),
+        "eval_target": partition.get("eval_target", "test"),
+        "validation_target": partition.get("validation_target"),
+        "positive_label": str(partition.get("positive_label", dataset_cfg.get("positive_label", "1"))),
+    }
+
+
+def _should_apply_partition(
+    *,
+    load_split: str,
+    partition_peer_dataset_configs: Optional[Sequence[Dict[str, Any]]],
+    infer_eval_split_train_without_peer: bool,
+    force_partition: bool,
+    dataset_cfg: Dict[str, Any],
+) -> bool:
+    if str(load_split) == "train":
+        return True
+    partition = dataset_cfg.get("partition")
+    if isinstance(partition, dict):
+        mode = str(partition.get("mode", "")).strip().lower()
+        if mode in {"balanced_binary", "pubmedqa"}:
+            return True
+    return bool(
+        force_partition
+        or _partition_peer_matched(
+            dataset_cfg,
+            load_split=load_split,
+            partition_peer_dataset_configs=partition_peer_dataset_configs,
+            infer_eval_split_train_without_peer=infer_eval_split_train_without_peer,
         )
-        return default_ratios
+    )
 
-    ratio_array = ratio_array / ratio_array.sum()
-    return tuple(float(v) for v in ratio_array.tolist())
+
+def _resolve_partition_target(partition_cfg: Dict[str, Any], load_split: str) -> str:
+    if str(load_split) == "train":
+        return str(partition_cfg["train_target"])
+    if str(load_split) == "test":
+        return str(partition_cfg["eval_target"])
+    validation_target = partition_cfg.get("validation_target")
+    if validation_target is None:
+        return str(load_split)
+    return str(validation_target)
 
 
 def _subset_pubmedqa_dataset(dataset: Dataset, indices: np.ndarray) -> Dataset:
@@ -338,58 +413,79 @@ def _subset_pubmedqa_dataset(dataset: Dataset, indices: np.ndarray) -> Dataset:
     return dataset
 
 
-def _apply_shared_source_tripartition(
+def _apply_partition(
     dataset: Dataset,
     dataset_name: str,
+    partition_cfg: Dict[str, Any],
     target_split: str,
-    split_seed: int,
-    split_ratios: Tuple[float, float, float],
     requested_size: Optional[int],
 ) -> Dataset:
-    """
-    Deterministically partition a single loaded HF split into train/val/test (default 8:1:1),
-    with ``cache_source_row_indices`` mapping each view row to a row in the *full* source
-    (so option-logit caches can stay keyed as the unpartitioned split).
-    """
-    split_aliases = {
-        "train": "train",
-        "val": "validation",
-        "validation": "validation",
-        "test": "test",
-        "train_val": "train_val",
-        "train+val": "train_val",
-    }
-    normalized_target = split_aliases.get(str(target_split).strip().lower())
-    if normalized_target is None:
-        raise ValueError(
-            f"Unsupported shared-source tripartition target '{target_split}'. "
-            "Use one of: train, validation, test, train_val."
+    """Partition a loaded dataset into train/val/test views."""
+    normalized_target = _normalize_partition_target(target_split)
+    mode = partition_cfg["mode"]
+    split_seed = int(partition_cfg["seed"])
+    split_ratios = partition_cfg["ratios"]
+    rng = np.random.RandomState(split_seed)
+
+    if mode == "uniform":
+        total_examples = len(dataset.x)
+        if total_examples <= 0:
+            raise ValueError(f"Dataset '{dataset_name}' is empty before partition")
+
+        all_indices = np.arange(total_examples, dtype=np.int64)
+        rng.shuffle(all_indices)
+        train_count, val_count, test_count = _compute_split_counts(split_ratios, total_examples)
+
+        train_indices = np.array(all_indices[:train_count], copy=True)
+        val_indices = np.array(all_indices[train_count : train_count + val_count], copy=True)
+        test_indices = np.array(all_indices[train_count + val_count :], copy=True)
+        source_size = int(total_examples)
+        partition_counts = {
+            "source_examples": source_size,
+            "train_examples": train_count,
+            "validation_examples": val_count,
+            "test_examples": test_count,
+        }
+    else:
+        if mode == "pubmedqa":
+            labels = np.array([str(label).strip().upper() for label in dataset.y], dtype=object)
+            class_pools = [np.where(labels == "YES")[0], np.where(labels == "NO")[0]]
+            class_names = ("YES", "NO")
+        else:
+            pos_marker = str(partition_cfg["positive_label"]).strip()
+            labels = np.array([str(label).strip() for label in dataset.y], dtype=object)
+            uniq = np.unique(labels)
+            if uniq.size != 2:
+                raise ValueError(
+                    f"Balanced binary dataset '{dataset_name}' must contain exactly two label values "
+                    f"(found {uniq.tolist()})."
+                )
+            if pos_marker not in set(uniq.tolist()):
+                raise ValueError(
+                    f"Balanced binary dataset '{dataset_name}': positive_label={pos_marker!r} "
+                    f"not found among labels {uniq.tolist()}."
+                )
+            class_pools = [np.where(labels == pos_marker)[0], np.where(labels != pos_marker)[0]]
+            class_names = (pos_marker, "other")
+
+        if any(pool.size == 0 for pool in class_pools):
+            raise ValueError(
+                f"Partitioned dataset '{dataset_name}' must contain both classes "
+                f"(mode={mode}, counts={[int(pool.size) for pool in class_pools]})."
+            )
+
+        train_indices, val_indices, test_indices, (train_count, val_count, test_count) = (
+            _partition_class_pools(class_pools, split_ratios, split_seed)
         )
-
-    total_examples = len(dataset.x)
-    if total_examples <= 0:
-        raise ValueError(f"Dataset '{dataset_name}' is empty before tripartition")
-
-    rng = np.random.RandomState(int(split_seed))
-    all_indices = np.arange(total_examples, dtype=np.int64)
-    rng.shuffle(all_indices)
-
-    ratio_array = np.array(split_ratios, dtype=np.float64)
-    raw_counts = ratio_array * float(total_examples)
-    split_counts = np.floor(raw_counts).astype(np.int64)
-    remainder = int(total_examples - split_counts.sum())
-    if remainder > 0:
-        residual_order = np.argsort(-(raw_counts - split_counts))
-        for idx in residual_order[:remainder]:
-            split_counts[idx] += 1
-
-    train_count, val_count, test_count = [int(v) for v in split_counts.tolist()]
-
-    train_indices = np.array(all_indices[:train_count], copy=True)
-    val_start = train_count
-    val_end = train_count + val_count
-    val_indices = np.array(all_indices[val_start:val_end], copy=True)
-    test_indices = np.array(all_indices[val_end:], copy=True)
+        source_size = int(sum(pool.size for pool in class_pools))
+        partition_counts = {
+            f"source_{class_names[0].lower()}": int(class_pools[0].size),
+            f"source_{class_names[1].lower()}": int(class_pools[1].size),
+            "balanced_per_label": int(min(pool.size for pool in class_pools)),
+            "train_per_label": train_count,
+            "validation_per_label": val_count,
+            "test_per_label": test_count,
+        }
 
     split_indices_map = {
         "train": train_indices,
@@ -397,9 +493,11 @@ def _apply_shared_source_tripartition(
         "test": test_indices,
         "train_val": np.concatenate([train_indices, val_indices]),
     }
-    selected_indices = np.array(split_indices_map[normalized_target], copy=True).astype(np.int64, copy=True)
+    selected_indices = np.array(split_indices_map[normalized_target], copy=True).astype(
+        np.int64, copy=True
+    )
 
-    preserve_contiguous = normalized_target == "train_val"
+    preserve_contiguous = mode == "uniform" and normalized_target == "train_val"
     if not preserve_contiguous:
         rng.shuffle(selected_indices)
 
@@ -407,398 +505,74 @@ def _apply_shared_source_tripartition(
         requested_size_int = int(requested_size)
         if requested_size_int <= 0:
             raise ValueError(
-                f"Invalid size={requested_size_int} for shared-source tripartition on '{dataset_name}'."
+                f"Invalid size={requested_size_int} for partitioned dataset '{dataset_name}'."
             )
         if requested_size_int < selected_indices.shape[0]:
             if preserve_contiguous:
-                log.warning(
-                    "Ignoring size=%d for '%s' train_val to preserve train|val contiguity.",
-                    requested_size_int,
-                    dataset_name,
+                raise ValueError(
+                    f"Requested size={requested_size_int} for '{dataset_name}' train_val "
+                    "conflicts with preserving train|val contiguity."
                 )
+            if mode in {"pubmedqa", "balanced_binary"}:
+                selected_labels = labels[selected_indices]
+                if mode == "pubmedqa":
+                    pos_marker = "YES"
+                else:
+                    pos_marker = str(partition_cfg["positive_label"]).strip()
+                split_pos = selected_indices[selected_labels == pos_marker]
+                split_neg = selected_indices[selected_labels != pos_marker]
+                per_class_limit = min(
+                    split_pos.shape[0],
+                    split_neg.shape[0],
+                    requested_size_int // 2,
+                )
+                if per_class_limit <= 0:
+                    raise ValueError(
+                        f"Requested size={requested_size_int} is too small to keep class balance "
+                        f"for partitioned dataset '{dataset_name}'."
+                    )
+                rng.shuffle(split_pos)
+                rng.shuffle(split_neg)
+                selected_indices = np.concatenate(
+                    [split_pos[:per_class_limit], split_neg[:per_class_limit]]
+                )
+                rng.shuffle(selected_indices)
             else:
-                selected_indices = selected_indices[:requested_size_int].astype(
-                    np.int64, copy=True
-                )
+                selected_indices = selected_indices[:requested_size_int].astype(np.int64, copy=True)
 
-    as_list = [int(i) for i in selected_indices.tolist()]
-    dataset.select(as_list)
-    # Row i of the view reads/writes full-split cache at global row selected_indices[i].
-    dataset.cache_source_num_examples = int(total_examples)
-    dataset.cache_source_row_indices = selected_indices
+    dataset = _subset_pubmedqa_dataset(dataset, selected_indices)
 
-    dataset.source_tripartition_target = normalized_target
-    dataset.source_tripartition_split_seed = int(split_seed)
-    dataset.source_tripartition_split_ratios = tuple(float(v) for v in ratio_array.tolist())
-    dataset.source_tripartition_counts = {
-        "source_examples": int(total_examples),
-        "train_examples": train_count,
-        "validation_examples": val_count,
-        "test_examples": test_count,
-        "selected_examples": int(len(dataset.x)),
-    }
+    dataset.partition_mode = mode
+    dataset.partition_target = normalized_target
+    dataset.partition_seed = split_seed
+    dataset.partition_ratios = tuple(float(v) for v in split_ratios)
+    dataset.partition_counts = {**partition_counts, "selected_examples": int(len(dataset.x))}
 
-    if preserve_contiguous:
-        dataset.source_tripartition_contiguous_train_val = True
-        dataset.source_tripartition_train_val_boundary = int(train_indices.shape[0])
-        tv = float(train_indices.shape[0] + val_indices.shape[0])
-        dataset.source_tripartition_val_ratio = (
-            float(val_indices.shape[0]) / tv if tv > 0 else 0.0
-        )
+    if normalized_target == "train_val":
+        train_val_size = int(train_indices.shape[0] + val_indices.shape[0])
+        if train_val_size > 0:
+            dataset.partition_val_ratio = float(val_indices.shape[0] / train_val_size)
+        if preserve_contiguous:
+            dataset.partition_contiguous_train_val = True
+            dataset.partition_train_val_boundary = int(train_indices.shape[0])
+        else:
+            dataset.partition_contiguous_train_val = False
+            dataset.partition_train_val_boundary = 0
     else:
-        dataset.source_tripartition_contiguous_train_val = False
-        dataset.source_tripartition_train_val_boundary = 0
-        dataset.source_tripartition_val_ratio = None
+        dataset.partition_val_ratio = None
+        dataset.partition_contiguous_train_val = False
+        dataset.partition_train_val_boundary = 0
+
+    if mode == "uniform":
+        dataset.cache_source_num_examples = source_size
+        dataset.cache_source_row_indices = selected_indices
 
     log.info(
-        "Shared-source 8:1:1 for %s: target=%s, seed=%d, source=%d, "
-        "counts(train/val/test)=(%d/%d/%d), view=%d",
+        "Partitioned %s: mode=%s, target=%s, seed=%d, counts(train/val/test)=(%d/%d/%d), view=%d",
         dataset_name,
+        mode,
         normalized_target,
-        int(split_seed),
-        int(total_examples),
-        train_count,
-        val_count,
-        test_count,
-        int(len(dataset.x)),
-    )
-
-    return dataset
-
-
-def _apply_pubmedqa_balanced_split(
-    dataset: Dataset,
-    dataset_name: str,
-    target_split: str,
-    split_seed: int,
-    split_ratios: Tuple[float, float, float],
-    requested_size: Optional[int],
-) -> Dataset:
-    """
-    Balance YES/NO labels, perform deterministic 6:2:2-style splitting, then subset.
-
-    The split is performed on balanced labels first, then the target partition is selected.
-    """
-    split_aliases = {
-        "train": "train",
-        "val": "validation",
-        "validation": "validation",
-        "test": "test",
-        "train_val": "train_val",
-        "train+val": "train_val",
-    }
-    normalized_target = split_aliases.get(str(target_split).strip().lower())
-    if normalized_target is None:
-        raise ValueError(
-            f"Unsupported PubMedQA target split '{target_split}'. "
-            "Use one of: train, validation, test, train_val."
-        )
-
-    labels = np.array([str(label).strip().upper() for label in dataset.y], dtype=object)
-    yes_indices = np.where(labels == "YES")[0]
-    no_indices = np.where(labels == "NO")[0]
-
-    if yes_indices.size == 0 or no_indices.size == 0:
-        raise ValueError(
-            f"PubMedQA dataset '{dataset_name}' must contain both YES and NO labels "
-            f"(found YES={yes_indices.size}, NO={no_indices.size})."
-        )
-
-    min_class_count = int(min(yes_indices.size, no_indices.size))
-    rng = np.random.RandomState(int(split_seed))
-
-    yes_pool = np.array(yes_indices, copy=True)
-    no_pool = np.array(no_indices, copy=True)
-    rng.shuffle(yes_pool)
-    rng.shuffle(no_pool)
-    yes_pool = yes_pool[:min_class_count]
-    no_pool = no_pool[:min_class_count]
-
-    ratio_array = np.array(split_ratios, dtype=np.float64)
-    raw_counts = ratio_array * float(min_class_count)
-    split_counts = np.floor(raw_counts).astype(np.int64)
-    remainder = int(min_class_count - split_counts.sum())
-    if remainder > 0:
-        residual_order = np.argsort(-(raw_counts - split_counts))
-        for idx in residual_order[:remainder]:
-            split_counts[idx] += 1
-
-    train_count, val_count, test_count = [int(v) for v in split_counts.tolist()]
-
-    train_yes = yes_pool[:train_count]
-    val_yes = yes_pool[train_count: train_count + val_count]
-    test_yes = yes_pool[train_count + val_count:]
-
-    train_no = no_pool[:train_count]
-    val_no = no_pool[train_count: train_count + val_count]
-    test_no = no_pool[train_count + val_count:]
-
-    train_indices = np.concatenate([train_yes, train_no])
-    val_indices = np.concatenate([val_yes, val_no])
-    test_indices = np.concatenate([test_yes, test_no])
-
-    rng.shuffle(train_indices)
-    rng.shuffle(val_indices)
-    rng.shuffle(test_indices)
-
-    split_indices_map = {
-        "train": train_indices,
-        "validation": val_indices,
-        "test": test_indices,
-        "train_val": np.concatenate([train_indices, val_indices]),
-    }
-    selected_indices = np.array(split_indices_map[normalized_target], copy=True)
-    rng.shuffle(selected_indices)
-
-    if requested_size is not None:
-        requested_size_int = int(requested_size)
-        if requested_size_int <= 0:
-            raise ValueError(
-                f"Invalid size={requested_size_int} for PubMedQA dataset '{dataset_name}'. "
-                "Expected a positive integer."
-            )
-
-        if requested_size_int < selected_indices.shape[0]:
-            selected_labels = labels[selected_indices]
-            split_yes_indices = selected_indices[selected_labels == "YES"]
-            split_no_indices = selected_indices[selected_labels == "NO"]
-            per_class_limit = min(
-                split_yes_indices.shape[0],
-                split_no_indices.shape[0],
-                requested_size_int // 2,
-            )
-
-            if per_class_limit <= 0:
-                raise ValueError(
-                    f"Requested size={requested_size_int} is too small to keep YES/NO balance "
-                    f"for PubMedQA dataset '{dataset_name}'."
-                )
-
-            rng.shuffle(split_yes_indices)
-            rng.shuffle(split_no_indices)
-
-            selected_indices = np.concatenate(
-                [split_yes_indices[:per_class_limit], split_no_indices[:per_class_limit]]
-            )
-            rng.shuffle(selected_indices)
-
-            balanced_size = int(selected_indices.shape[0])
-            if balanced_size < requested_size_int:
-                log.warning(
-                    "Requested size=%d for PubMedQA dataset '%s' adjusted to %d to preserve YES/NO balance.",
-                    requested_size_int,
-                    dataset_name,
-                    balanced_size,
-                )
-
-    dataset = _subset_pubmedqa_dataset(dataset, selected_indices)
-
-    dataset.pubmedqa_balanced_source = "pqa_artificial"
-    dataset.pubmedqa_balanced_split = normalized_target
-    dataset.pubmedqa_split_seed = int(split_seed)
-    dataset.pubmedqa_split_ratios = tuple(float(v) for v in ratio_array.tolist())
-    dataset.pubmedqa_balanced_counts = {
-        "source_yes": int(yes_indices.size),
-        "source_no": int(no_indices.size),
-        "balanced_per_label": int(min_class_count),
-        "train_per_label": train_count,
-        "validation_per_label": val_count,
-        "test_per_label": test_count,
-        "selected_examples": int(len(dataset.x)),
-    }
-
-    if normalized_target == "train_val":
-        train_val_size = train_count + val_count
-        if train_val_size > 0:
-            dataset.pubmedqa_train_val_split_ratio = float(val_count / train_val_size)
-
-    log.info(
-        "PubMedQA balanced split for %s: split=%s, seed=%d, source_yes=%d, source_no=%d, "
-        "balanced_per_label=%d, per_label_counts(train/val/test)=(%d/%d/%d), selected=%d",
-        dataset_name,
-        normalized_target,
-        int(split_seed),
-        int(yes_indices.size),
-        int(no_indices.size),
-        int(min_class_count),
-        train_count,
-        val_count,
-        test_count,
-        int(len(dataset.x)),
-    )
-
-    return dataset
-
-
-def _apply_balanced_binary_split(
-    dataset: Dataset,
-    dataset_name: str,
-    target_split: str,
-    split_seed: int,
-    split_ratios: Tuple[float, float, float],
-    requested_size: Optional[int],
-    positive_label: str,
-) -> Dataset:
-    """Class-balanced train/val/test partition for binary CSV labels (e.g. cluster_saturation_bayes).
-
-    Mirrors :func:`_apply_pubmedqa_balanced_split` but uses ``positive_label`` vs the other class
-    (labels compared as ``str(label).strip()``).
-    """
-    split_aliases = {
-        "train": "train",
-        "val": "validation",
-        "validation": "validation",
-        "test": "test",
-        "train_val": "train_val",
-        "train+val": "train_val",
-    }
-    normalized_target = split_aliases.get(str(target_split).strip().lower())
-    if normalized_target is None:
-        raise ValueError(
-            f"Unsupported balanced-binary target split '{target_split}'. "
-            "Use one of: train, validation, test, train_val."
-        )
-
-    pos_marker = str(positive_label).strip()
-    labels = np.array([str(label).strip() for label in dataset.y], dtype=object)
-    uniq = np.unique(labels)
-    if uniq.size != 2:
-        raise ValueError(
-            f"Balanced binary dataset '{dataset_name}' must contain exactly two label values "
-            f"(found {uniq.tolist()})."
-        )
-    if pos_marker not in set(uniq.tolist()):
-        raise ValueError(
-            f"Balanced binary dataset '{dataset_name}': positive_label={positive_label!r} "
-            f"not found among labels {uniq.tolist()}."
-        )
-
-    pos_indices = np.where(labels == pos_marker)[0]
-    neg_indices = np.where(labels != pos_marker)[0]
-
-    if pos_indices.size == 0 or neg_indices.size == 0:
-        raise ValueError(
-            f"Balanced binary dataset '{dataset_name}' must contain both classes "
-            f"(found positive={pos_indices.size}, negative={neg_indices.size})."
-        )
-
-    min_class_count = int(min(pos_indices.size, neg_indices.size))
-    rng = np.random.RandomState(int(split_seed))
-
-    pos_pool = np.array(pos_indices, copy=True)
-    neg_pool = np.array(neg_indices, copy=True)
-    rng.shuffle(pos_pool)
-    rng.shuffle(neg_pool)
-    pos_pool = pos_pool[:min_class_count]
-    neg_pool = neg_pool[:min_class_count]
-
-    ratio_array = np.array(split_ratios, dtype=np.float64)
-    raw_counts = ratio_array * float(min_class_count)
-    split_counts = np.floor(raw_counts).astype(np.int64)
-    remainder = int(min_class_count - split_counts.sum())
-    if remainder > 0:
-        residual_order = np.argsort(-(raw_counts - split_counts))
-        for idx in residual_order[:remainder]:
-            split_counts[idx] += 1
-
-    train_count, val_count, test_count = [int(v) for v in split_counts.tolist()]
-
-    train_pos = pos_pool[:train_count]
-    val_pos = pos_pool[train_count : train_count + val_count]
-    test_pos = pos_pool[train_count + val_count :]
-
-    train_neg = neg_pool[:train_count]
-    val_neg = neg_pool[train_count : train_count + val_count]
-    test_neg = neg_pool[train_count + val_count :]
-
-    train_indices = np.concatenate([train_pos, train_neg])
-    val_indices = np.concatenate([val_pos, val_neg])
-    test_indices = np.concatenate([test_pos, test_neg])
-
-    rng.shuffle(train_indices)
-    rng.shuffle(val_indices)
-    rng.shuffle(test_indices)
-
-    split_indices_map = {
-        "train": train_indices,
-        "validation": val_indices,
-        "test": test_indices,
-        "train_val": np.concatenate([train_indices, val_indices]),
-    }
-    selected_indices = np.array(split_indices_map[normalized_target], copy=True)
-    rng.shuffle(selected_indices)
-
-    if requested_size is not None:
-        requested_size_int = int(requested_size)
-        if requested_size_int <= 0:
-            raise ValueError(
-                f"Invalid size={requested_size_int} for balanced binary dataset '{dataset_name}'. "
-                "Expected a positive integer."
-            )
-
-        if requested_size_int < selected_indices.shape[0]:
-            selected_labels = labels[selected_indices]
-            split_pos_sel = selected_indices[selected_labels == pos_marker]
-            split_neg_sel = selected_indices[selected_labels != pos_marker]
-            per_class_limit = min(
-                split_pos_sel.shape[0],
-                split_neg_sel.shape[0],
-                requested_size_int // 2,
-            )
-
-            if per_class_limit <= 0:
-                raise ValueError(
-                    f"Requested size={requested_size_int} is too small to keep class balance "
-                    f"for balanced binary dataset '{dataset_name}'."
-                )
-
-            rng.shuffle(split_pos_sel)
-            rng.shuffle(split_neg_sel)
-
-            selected_indices = np.concatenate(
-                [split_pos_sel[:per_class_limit], split_neg_sel[:per_class_limit]]
-            )
-            rng.shuffle(selected_indices)
-
-            balanced_size = int(selected_indices.shape[0])
-            if balanced_size < requested_size_int:
-                log.warning(
-                    "Requested size=%d for balanced binary dataset '%s' adjusted to %d to preserve balance.",
-                    requested_size_int,
-                    dataset_name,
-                    balanced_size,
-                )
-
-    dataset = _subset_pubmedqa_dataset(dataset, selected_indices)
-
-    dataset.balanced_binary_split_source = "csv"
-    dataset.balanced_binary_target_split = normalized_target
-    dataset.balanced_binary_split_seed = int(split_seed)
-    dataset.balanced_binary_split_ratios = tuple(float(v) for v in ratio_array.tolist())
-    dataset.balanced_binary_split_counts = {
-        "source_positive": int(pos_indices.size),
-        "source_negative": int(neg_indices.size),
-        "balanced_per_label": int(min_class_count),
-        "train_per_label": train_count,
-        "validation_per_label": val_count,
-        "test_per_label": test_count,
-        "selected_examples": int(len(dataset.x)),
-    }
-
-    if normalized_target == "train_val":
-        train_val_size = train_count + val_count
-        if train_val_size > 0:
-            dataset.balanced_binary_train_val_ratio = float(val_count / train_val_size)
-
-    log.info(
-        "Balanced binary split for %s: split=%s, seed=%d, source_pos=%d, source_neg=%d, "
-        "balanced_per_label=%d, per_label_counts(train/val/test)=(%d/%d/%d), selected=%d",
-        dataset_name,
-        normalized_target,
-        int(split_seed),
-        int(pos_indices.size),
-        int(neg_indices.size),
-        int(min_class_count),
+        split_seed,
         train_count,
         val_count,
         test_count,
@@ -838,10 +612,10 @@ def apply_shuffling(
     then splits into train and validation sets.
     """
     contiguous_tri_split = bool(
-        getattr(dataset, "source_tripartition_contiguous_train_val", False)
+        getattr(dataset, "partition_contiguous_train_val", False)
     )
     tri_boundary = int(
-        getattr(dataset, "source_tripartition_train_val_boundary", 0) or 0
+        getattr(dataset, "partition_train_val_boundary", 0) or 0
     )
 
     if not shuffle_data:
@@ -981,14 +755,22 @@ def apply_shuffling(
     )
 
 
+def _partition_seed_from_cfg(dataset_cfg: Dict[str, Any]) -> Optional[int]:
+    partition = dataset_cfg.get("partition")
+    if isinstance(partition, dict) and "seed" in partition:
+        return int(partition["seed"])
+    if "split_seed" in dataset_cfg:
+        return int(dataset_cfg["split_seed"])
+    return None
+
+
 def load_dataset_from_config(
     dataset_cfg: Dict[str, Any],
     split: str = "train",
     random_seed: Optional[int] = None,
-    shared_source_tripartition: bool = False,
-    tripartition_peer_dataset_configs: Optional[Sequence[Dict[str, Any]]] = None,
+    partition_peer_dataset_configs: Optional[Sequence[Dict[str, Any]]] = None,
     infer_eval_split_train_without_peer: bool = False,
-    force_shared_source_tripartition: bool = False,
+    force_partition: bool = False,
 ) -> Tuple[Dataset, str]:
     """Load a single dataset from configuration."""
     if "name" not in dataset_cfg:
@@ -997,19 +779,10 @@ def load_dataset_from_config(
     dataset_path = dataset_cfg["name"]
     is_pubmedqa = _is_pubmedqa_dataset_config(dataset_cfg)
     requested_size = dataset_cfg.get("size", None)
-    is_shared_tripartition = (
-        bool(shared_source_tripartition)
-        and (
-            bool(force_shared_source_tripartition)
-            or _shared_source_tripartition_peer_matched(
-                dataset_cfg,
-                load_split=split,
-                tripartition_peer_dataset_configs=tripartition_peer_dataset_configs,
-                infer_eval_split_train_without_peer=bool(infer_eval_split_train_without_peer),
-            )
-        )
-        and not is_pubmedqa
-    )
+    partition_cfg_raw = dataset_cfg.get("partition")
+    has_partition = isinstance(partition_cfg_raw, dict)
+    partition_applied = False
+    dataset_target_split: Optional[str] = None
 
     if is_pubmedqa:
         config_name = dataset_cfg.get(
@@ -1023,29 +796,15 @@ def load_dataset_from_config(
             ),
         )
         actual_split = dataset_cfg.get("pubmedqa_source_split", "train")
-        if split == "train":
-            dataset_target_split = dataset_cfg.get("pubmedqa_train_target_split", "train_val")
-        elif split == "test":
-            dataset_target_split = dataset_cfg.get("pubmedqa_eval_target_split", "test")
-        else:
-            dataset_target_split = dataset_cfg.get("pubmedqa_validation_target_split", split)
     elif split == "train":
         config_name = dataset_cfg.get("train_config_name", dataset_cfg.get("config_name"))
         actual_split = dataset_cfg.get("train_split", split)
-        dataset_target_split = None
     else:
         config_name = dataset_cfg.get(
             "eval_config_name",
             dataset_cfg.get("test_config_name", dataset_cfg.get("config_name")),
         )
         actual_split = dataset_cfg.get("eval_split", split)
-        dataset_target_split = None
-
-    shared_tripartition_target: Optional[str] = None
-    if is_shared_tripartition and split == "train":
-        shared_tripartition_target = "train_val"
-    elif is_shared_tripartition and split == "test":
-        shared_tripartition_target = "test"
 
     if config_name and isinstance(dataset_path, str):
         dataset_path = [dataset_path, config_name]
@@ -1088,73 +847,28 @@ def load_dataset_from_config(
         dataset.pubmedqa_wrong_context_routing = bool(
             dataset_cfg.get("pubmedqa_wrong_context_routing", False)
         )
-        seed_candidate = dataset_cfg.get("split_seed", random_seed if random_seed is not None else 42)
-        split_seed = int(seed_candidate)
-        split_ratios = _normalize_pubmedqa_split_ratios(dataset_cfg.get("pubmedqa_split_ratios"))
-        dataset = _apply_pubmedqa_balanced_split(
+
+    if has_partition and _should_apply_partition(
+        load_split=split,
+        partition_peer_dataset_configs=partition_peer_dataset_configs,
+        infer_eval_split_train_without_peer=bool(infer_eval_split_train_without_peer),
+        force_partition=bool(force_partition),
+        dataset_cfg=dataset_cfg,
+    ):
+        partition_cfg = _resolve_partition_cfg(dataset_cfg, random_seed)
+        dataset_target_split = _resolve_partition_target(partition_cfg, split)
+        dataset = _apply_partition(
             dataset=dataset,
             dataset_name=dataset_name,
+            partition_cfg=partition_cfg,
             target_split=dataset_target_split,
-            split_seed=split_seed,
-            split_ratios=split_ratios,
             requested_size=requested_size,
         )
-    elif bool(dataset_cfg.get("balanced_binary_split")) and not is_pubmedqa:
-        seed_candidate = dataset_cfg.get(
-            "split_seed", random_seed if random_seed is not None else 42
-        )
-        split_seed = int(seed_candidate)
-        raw_ratios = dataset_cfg.get("split_ratios")
-        if raw_ratios is None:
-            raw_ratios = dataset_cfg.get("pubmedqa_split_ratios")
-        split_ratios = _normalize_pubmedqa_split_ratios(raw_ratios)
+        partition_applied = True
 
-        if split == "train":
-            bb_target = dataset_cfg.get(
-                "train_target_split",
-                dataset_cfg.get("pubmedqa_train_target_split", "train_val"),
-            )
-        elif split == "test":
-            bb_target = dataset_cfg.get(
-                "eval_target_split",
-                dataset_cfg.get(
-                    "test_target_split",
-                    dataset_cfg.get("pubmedqa_eval_target_split", "test"),
-                ),
-            )
-        else:
-            bb_target = dataset_cfg.get(
-                "validation_target_split",
-                dataset_cfg.get("pubmedqa_validation_target_split", split),
-            )
+    use_uniform_cache = partition_applied and getattr(dataset, "partition_mode", None) == "uniform"
 
-        pos_lbl = dataset_cfg.get("positive_label", "1")
-        dataset = _apply_balanced_binary_split(
-            dataset=dataset,
-            dataset_name=dataset_name,
-            target_split=str(bb_target),
-            split_seed=split_seed,
-            split_ratios=split_ratios,
-            requested_size=requested_size,
-            positive_label=str(pos_lbl),
-        )
-    elif is_shared_tripartition and shared_tripartition_target is not None:
-        seed_candidate = dataset_cfg.get(
-            "split_seed", random_seed if random_seed is not None else 42
-        )
-        split_seed = int(seed_candidate)
-        raw_ratios = dataset_cfg.get("source_tripartition_ratios")
-        split_ratios = _normalize_shared_source_tripartition_ratios(raw_ratios)
-        dataset = _apply_shared_source_tripartition(
-            dataset=dataset,
-            dataset_name=dataset_name,
-            target_split=str(shared_tripartition_target),
-            split_seed=split_seed,
-            split_ratios=split_ratios,
-            requested_size=requested_size,
-        )
-
-    if is_shared_tripartition and shared_tripartition_target is not None:
+    if use_uniform_cache:
         def _display_or_slug(c: Dict[str, Any]) -> str:
             d = c.get("display_name")
             if d:
@@ -1162,27 +876,27 @@ def load_dataset_from_config(
             p = c.get("name", "")
             return str(p).replace("/", "_").replace("[", "").replace("]", "")
 
-        tripartition_cache_dataset_name = _display_or_slug(dataset_cfg)
-        if str(split) == "test" and tripartition_peer_dataset_configs:
-            for peer in tripartition_peer_dataset_configs:
+        partition_cache_dataset_name = _display_or_slug(dataset_cfg)
+        if str(split) == "test" and partition_peer_dataset_configs:
+            for peer in partition_peer_dataset_configs:
                 h_peer, _ = _resolve_hf_identity_and_split(peer, load_split="train")
                 h_self, _ = _resolve_hf_identity_and_split(dataset_cfg, load_split="test")
                 if isinstance(peer, dict) and h_peer and h_self and h_peer == h_self:
-                    tripartition_cache_dataset_name = _display_or_slug(peer)
+                    partition_cache_dataset_name = _display_or_slug(peer)
                     break
-        elif str(split) == "test" and not tripartition_peer_dataset_configs:
+        elif str(split) == "test" and not partition_peer_dataset_configs:
             dn = dataset_cfg.get("display_name")
             if isinstance(dn, str) and dn.endswith("_test"):
-                tripartition_cache_dataset_name = str(dn[:-5]).replace(
+                partition_cache_dataset_name = str(dn[:-5]).replace(
                     "/", "_"
                 ).replace("[", "").replace("]", "")
             else:
-                tripartition_cache_dataset_name = _display_or_slug(
+                partition_cache_dataset_name = _display_or_slug(
                     {**dataset_cfg, "display_name": None}
                 )
         dataset.cache_dataset_config = _build_tripartition_full_source_cache_config(
             dataset_cfg,
-            cache_dataset_name=tripartition_cache_dataset_name,
+            cache_dataset_name=partition_cache_dataset_name,
             resolved_path=dataset_path,
             resolved_huggingface_split=str(actual_split),
             resolved_config_name=config_name,
@@ -1207,15 +921,10 @@ def load_dataset_from_config(
             f"Dataset {dataset_name} loaded but has 0 examples (split: {actual_split})"
         )
 
-    if is_pubmedqa:
+    if partition_applied:
         log.info(
             f"Loaded dataset: {dataset_name} "
-            f"(source_split: {actual_split}, target_split: {dataset_target_split}, size: {len(dataset.x)})"
-        )
-    elif is_shared_tripartition and shared_tripartition_target is not None:
-        log.info(
-            f"Loaded dataset: {dataset_name} "
-            f"(shared 8:1:1 of split {actual_split}, size: {len(dataset.x)})"
+            f"(partitioned from split {actual_split}, target={dataset_target_split}, size: {len(dataset.x)})"
         )
     else:
         log.info(
@@ -1229,10 +938,9 @@ def load_datasets_from_config(
     dataset_configs: List[Dict[str, Any]],
     split: str = "train",
     random_seed: Optional[int] = None,
-    shared_source_tripartition: bool = False,
-    tripartition_peer_dataset_configs: Optional[Sequence[Dict[str, Any]]] = None,
+    partition_peer_dataset_configs: Optional[Sequence[Dict[str, Any]]] = None,
     infer_eval_split_train_without_peer: bool = False,
-    force_shared_source_tripartition: bool = False,
+    force_partition: bool = False,
 ) -> Tuple[List[Dataset], List[str]]:
     """Load multiple datasets (used for OOD eval lists)."""
     if not dataset_configs:
@@ -1245,10 +953,9 @@ def load_datasets_from_config(
             dataset_cfg,
             split=split,
             random_seed=random_seed,
-            shared_source_tripartition=shared_source_tripartition,
-            tripartition_peer_dataset_configs=tripartition_peer_dataset_configs,
+            partition_peer_dataset_configs=partition_peer_dataset_configs,
             infer_eval_split_train_without_peer=infer_eval_split_train_without_peer,
-            force_shared_source_tripartition=force_shared_source_tripartition,
+            force_partition=force_partition,
         )
         datasets.append(dataset)
         dataset_names.append(name)

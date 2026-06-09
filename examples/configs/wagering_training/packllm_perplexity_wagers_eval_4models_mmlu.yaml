@@ -22,7 +22,6 @@ report_to_wandb: false
 wandb_project: multi-llm-wagering
 wandb_entity: null
 wandb_name: packllm_perplexity_wagers_eval_4models
-shared_source_tripartition: true
 _include_ood_datasets:
 - datasets/arc_challenge.yaml
 ood_datasets:

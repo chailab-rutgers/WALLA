@@ -156,8 +156,8 @@ def main() -> int:
             cfg["report_to_wandb"] = False
             cfg["shuffle_seed"] = int(cfg.get("shuffle_seed", 42)) + int(repeat_idx)
             cfg["checkpoint_base_dir"] = str(repeat_dir)
-            cfg.setdefault("eval_checkpoint_dir", str(repeat_dir / "eval"))
-            cfg.setdefault("checkpoint_path", str(repeat_dir))
+            cfg["eval_checkpoint_dir"] = str(repeat_dir / "eval")
+            cfg["checkpoint_path"] = str(repeat_dir)
 
             tmp = cfg_path.parent / f".tmp_cal_compare_{arm_name}_{repeat_idx:04d}.yaml"
             run_env = dict(base_env)
