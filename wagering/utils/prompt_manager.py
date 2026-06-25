@@ -122,17 +122,36 @@ def _build_pubmedqa_wrong_context_example_indices(
     *,
     num_examples: int,
     seed: int,
+    example_buckets: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if num_examples <= 0:
         return np.empty((0,), dtype=np.int32)
-    if num_examples == 1:
+
+    buckets: Optional[np.ndarray] = None
+    if example_buckets is not None:
+        buckets = np.asarray(example_buckets, dtype=np.int8)
+        if buckets.shape != (num_examples,):
+            raise ValueError("example_buckets must be 1D and match num_examples")
+
+    if buckets is None and num_examples == 1:
         return np.zeros((1,), dtype=np.int32)
 
     rng = np.random.RandomState(int(seed))
     out = np.empty((num_examples,), dtype=np.int32)
     for i in range(num_examples):
-        r = int(rng.randint(0, num_examples - 1))
-        out[i] = r if r < i else r + 1
+        if buckets is None:
+            r = int(rng.randint(0, num_examples - 1))
+            out[i] = r if r < i else r + 1
+            continue
+
+        bucket_id = int(buckets[i])
+        candidates = [j for j in range(num_examples) if j != i and int(buckets[j]) == bucket_id]
+        if not candidates:
+            raise ValueError(
+                f"Cannot assign wrong context for example {i}: "
+                f"partition bucket {bucket_id} has only one example"
+            )
+        out[i] = int(rng.choice(candidates))
     return out.astype(np.int32, copy=False)
 
 
@@ -272,9 +291,21 @@ def assign_pubmedqa_context_model(
             example_seed_components.append(f"dataset_index={int(dataset_index)}")
         example_seed_input = "::".join(example_seed_components)
         example_seed = int(hashlib.md5(example_seed_input.encode("utf-8")).hexdigest()[:8], 16)
+        raw_buckets = getattr(dataset, "partition_example_bucket", None)
+        example_buckets = (
+            np.asarray(raw_buckets, dtype=np.int8)
+            if raw_buckets is not None
+            else None
+        )
+        if example_buckets is not None and example_buckets.shape != (num_examples,):
+            raise ValueError(
+                "partition_example_bucket must match dataset length "
+                f"(got {example_buckets.shape[0]}, expected {num_examples})"
+            )
         source_indices = _build_pubmedqa_wrong_context_example_indices(
             num_examples=num_examples,
             seed=example_seed,
+            example_buckets=example_buckets,
         )
         dataset.pubmedqa_wrong_context_source_example_by_example = source_indices.tolist()
         dataset.pubmedqa_wrong_context_source_hash = hashlib.md5(source_indices.tobytes()).hexdigest()[:12]
@@ -345,6 +376,12 @@ def get_model_prompt_variant(
     if dataset_type == "pubmedqa":
         wrong_hash = getattr(dataset, "pubmedqa_wrong_context_assignment_hash", None)
         if isinstance(wrong_hash, str) and wrong_hash:
+            source_hash = getattr(dataset, "pubmedqa_wrong_context_source_hash", None)
+            if isinstance(source_hash, str) and source_hash:
+                return (
+                    f"balanced_random_context_wrong_m{model_index}_"
+                    f"{assignment_hash}_{wrong_hash}_{source_hash}"
+                )
             return f"balanced_random_context_wrong_m{model_index}_{assignment_hash}_{wrong_hash}"
         return f"balanced_random_context_m{model_index}_{assignment_hash}"
     raise RuntimeError(f"Unsupported mixed-context dataset type: {dataset_type}")

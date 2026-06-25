@@ -402,6 +402,9 @@ def _subset_pubmedqa_dataset(dataset: Dataset, indices: np.ndarray) -> Dataset:
     index_list = [int(i) for i in indices.tolist()]
     with_context_prompts = getattr(dataset, "pubmedqa_with_context_x", None)
     without_context_prompts = getattr(dataset, "pubmedqa_without_context_x", None)
+    questions = getattr(dataset, "pubmedqa_questions", None)
+    long_answers = getattr(dataset, "pubmedqa_long_answers", None)
+    context_texts = getattr(dataset, "pubmedqa_context_texts", None)
 
     dataset.select(index_list)
 
@@ -409,6 +412,12 @@ def _subset_pubmedqa_dataset(dataset: Dataset, indices: np.ndarray) -> Dataset:
         dataset.pubmedqa_with_context_x = [with_context_prompts[i] for i in index_list]
     if isinstance(without_context_prompts, list):
         dataset.pubmedqa_without_context_x = [without_context_prompts[i] for i in index_list]
+    if isinstance(questions, list):
+        dataset.pubmedqa_questions = [questions[i] for i in index_list]
+    if isinstance(long_answers, list):
+        dataset.pubmedqa_long_answers = [long_answers[i] for i in index_list]
+    if isinstance(context_texts, list):
+        dataset.pubmedqa_context_texts = [context_texts[i] for i in index_list]
 
     return dataset
 
@@ -496,10 +505,26 @@ def _apply_partition(
     selected_indices = np.array(split_indices_map[normalized_target], copy=True).astype(
         np.int64, copy=True
     )
+    if normalized_target == "train_val":
+        example_buckets = np.concatenate(
+            [
+                np.zeros(len(train_indices), dtype=np.int8),
+                np.ones(len(val_indices), dtype=np.int8),
+            ]
+        )
+    else:
+        bucket_by_target = {"train": 0, "validation": 1, "test": 2}
+        example_buckets = np.full(
+            selected_indices.shape[0],
+            bucket_by_target[normalized_target],
+            dtype=np.int8,
+        )
 
     preserve_contiguous = mode == "uniform" and normalized_target == "train_val"
     if not preserve_contiguous:
-        rng.shuffle(selected_indices)
+        perm = rng.permutation(selected_indices.shape[0])
+        selected_indices = selected_indices[perm]
+        example_buckets = example_buckets[perm]
 
     if requested_size is not None:
         requested_size_int = int(requested_size)
@@ -519,11 +544,11 @@ def _apply_partition(
                     pos_marker = "YES"
                 else:
                     pos_marker = str(partition_cfg["positive_label"]).strip()
-                split_pos = selected_indices[selected_labels == pos_marker]
-                split_neg = selected_indices[selected_labels != pos_marker]
+                pos_positions = np.flatnonzero(selected_labels == pos_marker)
+                neg_positions = np.flatnonzero(selected_labels != pos_marker)
                 per_class_limit = min(
-                    split_pos.shape[0],
-                    split_neg.shape[0],
+                    pos_positions.shape[0],
+                    neg_positions.shape[0],
                     requested_size_int // 2,
                 )
                 if per_class_limit <= 0:
@@ -531,17 +556,21 @@ def _apply_partition(
                         f"Requested size={requested_size_int} is too small to keep class balance "
                         f"for partitioned dataset '{dataset_name}'."
                     )
-                rng.shuffle(split_pos)
-                rng.shuffle(split_neg)
-                selected_indices = np.concatenate(
-                    [split_pos[:per_class_limit], split_neg[:per_class_limit]]
+                rng.shuffle(pos_positions)
+                rng.shuffle(neg_positions)
+                keep_positions = np.concatenate(
+                    [pos_positions[:per_class_limit], neg_positions[:per_class_limit]]
                 )
-                rng.shuffle(selected_indices)
+                rng.shuffle(keep_positions)
+                selected_indices = selected_indices[keep_positions].astype(np.int64, copy=True)
+                example_buckets = example_buckets[keep_positions]
             else:
                 selected_indices = selected_indices[:requested_size_int].astype(np.int64, copy=True)
+                example_buckets = example_buckets[:requested_size_int]
 
     dataset = _subset_pubmedqa_dataset(dataset, selected_indices)
 
+    dataset.partition_example_bucket = example_buckets.tolist()
     dataset.partition_mode = mode
     dataset.partition_target = normalized_target
     dataset.partition_seed = split_seed

@@ -37,9 +37,15 @@ def find_model_cache_misses(
     phase: str,
     needs_hidden_states: bool,
     needs_perplexities: bool = False,
+    model_indices: Optional[Sequence[int]] = None,
 ) -> List[CacheMiss]:
     misses: List[CacheMiss] = []
-    for model_index, model_cfg in enumerate(model_cfgs):
+    if model_indices is not None and len(model_indices) != len(model_cfgs):
+        raise ValueError(
+            f"model_indices length ({len(model_indices)}) must match model_cfgs ({len(model_cfgs)})"
+        )
+    for enum_index, model_cfg in enumerate(model_cfgs):
+        model_index = int(model_indices[enum_index]) if model_indices is not None else enum_index
         model_path = model_cfg["path"]
         for dataset in datasets:
             dataset_name = str(getattr(dataset, "cache_dataset_name", phase))
@@ -198,6 +204,7 @@ def _model_cache_ok(
         option_tokens,
         phase="",
         needs_hidden_states=needs_hidden_states,
+        model_indices=[model_index],
     )
 
 
